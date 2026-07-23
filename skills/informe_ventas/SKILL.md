@@ -85,7 +85,7 @@ Cada bloque describe: que muestra, que datos necesita y como formatearlo.
 # [Titulo del informe segun lo que pidio el usuario]
 **Periodo:** [rango de fechas o descripcion del periodo]
 **Generado:** [fecha de hoy]
-**Cliente:** Creytex — Almacenes Exito S.A.
+Creytex
 ```
 
 El titulo debe reflejar exactamente lo que el usuario pidio, no un titulo generico.
@@ -268,6 +268,42 @@ Indicar la fuente: "Datos extraidos de tabla `ventas` — CreytexToSQL."
 | Variacion | Signo + o - con 1 decimal | +10.1% / -22.0% |
 | Porcentaje de composicion | 1 decimal + % | 42.0% |
 | Fechas | DD/MM/YYYY | 15/01/2026 |
+
+---
+
+## Graficos de apoyo (skill `graficos_ventas`)
+
+Para los bloques **D**, **F** y **G**, el pipeline genera automaticamente graficos
+a partir de los datos obtenidos usando la skill `graficos_ventas`. No es necesario
+que el agente los solicite explicitamente.
+
+### Reglas de insercion
+
+1. El grafico se genera **antes** de redactar el informe, usando los mismos datos.
+2. El agente redactor debe insertar la imagen markdown **tal como viene en los datos**
+   `![Titulo](ruta/real/del/archivo.png)` — la ruta exacta la proporciona el pipeline en la
+   seccion "Graficos generados" del prompt. No inventar ni modificar la ruta.
+3. El `timestamp` del grafico es el mismo del informe para que compartan sufijo.
+4. Si la generacion del grafico falla, el agente debe continuar el informe sin la
+   imagen y mencionarlo: "No fue posible generar el grafico para este bloque."
+
+### Ubicacion sugerida por bloque
+
+| Bloque | Contenido del bloque | Grafico sugerido | Donde insertarlo |
+|--------|---------------------|------------------|------------------|
+| D | Desglose geografico | `barras_horizontales` con top departamentos | Despues de la tabla de top departamentos |
+| F | Desglose por producto | `barras_verticales` con distribucion de tallas o grupo | Despues de la tabla de producto |
+| G | Evolucion temporal | `linea` con tendencia diaria/semanal/mensual | Despues de la tabla de evolucion |
+| B | Resumen ejecutivo | `barras_horizontales` (si hay datos comparativos) | Al final del bloque, antes del siguiente |
+| E | Desglose por tienda | `barras_horizontales` con top tiendas | Despues de la tabla de tiendas |
+
+### Cuando NO forzar grafico
+
+- Bloque A (portada): nunca lleva grafico.
+- Bloque C (metricas): son numeros individuales, no graficar.
+- Bloque H (estado): datos binarios/estados, no graficar.
+- Bloque I (alertas): las alertas son texto, no graficar.
+- Bloque J (anexo): datos completos, no graficar.
 
 ---
 

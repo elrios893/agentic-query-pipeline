@@ -134,6 +134,27 @@ def markdown_a_docx(md_text: str) -> Document:
             i += 1
             continue
 
+        img_match = re.match(r'^!\[(.*?)\]\((.*?)\)', text)
+        if img_match:
+            alt_text = img_match.group(1)
+            img_path = img_match.group(2).strip()
+            if os.path.exists(img_path):
+                try:
+                    doc.add_picture(img_path, width=Inches(5.5))
+                    last_paragraph = doc.paragraphs[-1]
+                    last_paragraph.alignment = 1  # CENTER
+                    p = doc.add_paragraph()
+                    run = p.add_run(alt_text)
+                    run.font.size = Pt(8)
+                    run.font.color.rgb = RGBColor(0x80, 0x80, 0x80)
+                    p.alignment = 1  # CENTER
+                except Exception:
+                    doc.add_paragraph(f'[Grafico: {alt_text}]')
+            else:
+                doc.add_paragraph(f'[Grafico no disponible: {alt_text}]')
+            i += 1
+            continue
+
         text_clean = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
         text_clean = text_clean.replace('⚠️', '')
         p = doc.add_paragraph(text_clean)

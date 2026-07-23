@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 """
 Orquestador: pipeline de consulta de datos en lenguaje natural.
-Flujo:
-  - Pregunta normal → generador_consultas → validador → consultar_db → redactor_respuesta
-  - Intencion de informe (detectada por keywords) → mismo pipeline + skill informe_ventas → generar_docx
+Soporta multiples proveedores LLM configurados via .env (LLM_PROVIDER).
 """
 import os
 import re
@@ -14,11 +12,34 @@ import unicodedata
 from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
-from groq import Groq
 
 load_dotenv()
-client = Groq(api_key=os.getenv('GROQ_API_KEY'))
-MODELO = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')
+
+# ---------------------------------------------------------------------------
+# Provider abstraction — configurado via .env: LLM_PROVIDER=groq|cerebras|gemini
+# ---------------------------------------------------------------------------
+PROVIDER = os.getenv('LLM_PROVIDER', 'groq').lower()
+
+if PROVIDER == 'groq':
+    from groq import Groq
+    _client = Groq(api_key=os.getenv('GROQ_API_KEY'))
+    MODELO  = os.getenv('GROQ_MODEL', 'llama-3.3-70b-versatile')
+
+elif PROVIDER == 'cerebras':
+    from openai import OpenAI
+    _client = OpenAI(
+        api_key=os.getenv('CEREBRAS_KEY'),
+        base_url='https://api.cerebras.ai/v1',
+    )
+    MODELO  = os.getenv('CEREBRAS_MODEL', 'gemma-4-31b')
+
+elif PROVIDER == 'gemini':
+    from google import genai
+    _client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
+    MODELO  = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
+
+else:
+    raise ValueError(f'LLM_PROVIDER desconocido: {PROVIDER}. Usa: groq, cerebras, gemini')
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 AGENTS_DIR = BASE_DIR / 'agents'
@@ -49,15 +70,26 @@ def limpiar_texto(texto: str) -> str:
     return ''.join(c for c in texto if unicodedata.category(c) != 'So').strip()
 
 def llamar_llm(system_prompt: str, user_prompt: str, temperatura: float = 0.1) -> str:
-    respuesta = client.chat.completions.create(
-        model=MODELO,
-        messages=[
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': user_prompt},
-        ],
-        temperature=temperatura,
-    )
-    return limpiar_texto(respuesta.choices[0].message.content.strip())
+    if PROVIDER == 'gemini':
+        response = _client.models.generate_content(
+            model=MODELO,
+            contents=user_prompt,
+            config={
+                'system_instruction': system_prompt,
+                'temperature': temperatura,
+            },
+        )
+        return limpiar_texto(response.text.strip())
+    else:
+        respuesta = _client.chat.completions.create(
+            model=MODELO,
+            messages=[
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ],
+            temperature=temperatura,
+        )
+        return limpiar_texto(respuesta.choices[0].message.content.strip())
 
 def extraer_sql(texto: str) -> str:
     bloques = re.findall(r'```sql\s*(.*?)\s*```', texto, re.DOTALL | re.IGNORECASE)
@@ -114,6 +146,161 @@ Pregunta original del usuario: {pregunta}"""
         else:
             print('Se agotaron los intentos de validacion.')
             sys.exit(1)
+
+def generar_graficos_informe(resultados, pregunta, plan, timestamp):
+    skill_graficos = leer_skill('graficos_ventas')
+
+    # Construir resumen de columnas disponibles por consulta
+    resumen_columnas = {}
+    for nombre_consulta, res in resultados.items():
+        cols = res.get('columns', [])
+        filas = res.get('rows', [])
+        if cols and filas:
+            resumen_columnas[nombre_consulta] = {
+                'filas': len(filas),
+                'columnas': cols,
+            }
+
+    prompt = f"""Eres un consultor de visualizacion de datos.
+
+Skill de graficos disponible:
+{skill_graficos}
+
+Resumen de datos disponibles (columnas exactas):
+{json.dumps(resumen_columnas, ensure_ascii=False, indent=2)}
+
+Pregunta del usuario: "{pregunta}"
+Bloques seleccionados: {plan.get('bloques', [])}
+
+Decide que graficos generar (maximo 4). Responde SOLO con un JSON valido.
+
+Formato:
+[
+  {{
+    "nombre": "identificador_unico",
+    "tipo": "barras_horizontales",
+    "titulo": "Titulo del grafico",
+    "etiqueta_x": "Departamento",
+    "etiqueta_y": "Unidades Vendidas",
+    "formato_y": "unidades",
+    "consulta_origen": "nombre_exacto_de_la_consulta",
+    "columna_x": "DEPARTAMENTO",
+    "columna_y": "TOTAL_UNIDADES",
+    "columna_serie": null,
+    "bloque_destino": "D"
+  }}
+]
+
+- "consulta_origen" debe coincidir con una clave del resumen de datos.
+- "columna_x" y "columna_y" deben ser nombres exactos de columna visibles en "columnas".
+- "columna_serie": nombre de columna para series (barras_agrupadas) o null.
+- "formato_y": "moneda" | "unidades" | "porcentaje".
+- Si no hay graficos que valgan la pena, responde: []
+"""
+
+    print(f'  Enviando prompt con {len(resumen_columnas)} consultas disponibles...')
+    respuesta = llamar_llm(skill_graficos, prompt, temperatura=0.2)
+    print(f'  Respuesta del LLM (primeros 300 chars): {respuesta[:300]}')
+
+    bloque_json = re.search(r'\[.*\]', respuesta, re.DOTALL)
+    if not bloque_json:
+        print('  No se pudo parsear JSON de graficos.')
+        return {}
+
+    try:
+        specs = json.loads(bloque_json.group(0))
+    except json.JSONDecodeError:
+        print('  Error al decodificar JSON de graficos.')
+        return {}
+
+    if not isinstance(specs, list) or not specs:
+        print('  No se generaran graficos (lista vacia).')
+        return {}
+
+    import sys as _sys
+    _sys.path.insert(0, str(BASE_DIR))
+    from tools.generar_grafico import generar_grafico
+
+    charts_dir = BASE_DIR / 'reports' / 'charts'
+    imagenes = {}
+    for spec in specs[:4]:
+        nombre = spec.get('nombre', 'grafico')
+        tipo = spec.get('tipo', 'barras_horizontales')
+        titulo = spec.get('titulo', '')
+        etiqueta_x = spec.get('etiqueta_x', '')
+        etiqueta_y = spec.get('etiqueta_y', '')
+        formato_y = spec.get('formato_y', 'unidades')
+        consulta_origen = spec.get('consulta_origen', '')
+        col_x = spec.get('columna_x', '')
+        col_y = spec.get('columna_y', '')
+        col_serie = spec.get('columna_serie')
+        bloque_destino = spec.get('bloque_destino', '')
+
+        if consulta_origen not in resultados:
+            print(f'  Saltando "{nombre}": consulta "{consulta_origen}" no encontrada.')
+            continue
+
+        data_cols = resultados[consulta_origen].get('columns', [])
+        data_rows = resultados[consulta_origen].get('rows', [])
+        if not data_cols or not data_rows:
+            print(f'  Saltando "{nombre}": datos vacios.')
+            continue
+
+        # Buscar columna_x y columna_y ignorando mayusculas/minusculas
+        col_x_real = _match_col(col_x, data_cols)
+        col_y_real = _match_col(col_y, data_cols)
+
+        datos_graf = []
+        for row in data_rows:
+            row_dict = dict(zip(data_cols, row))
+            item = {
+                'x': str(row_dict.get(col_x_real or col_x, '')),
+                'y': float(row_dict.get(col_y_real or col_y, 0) or 0),
+            }
+            if col_serie:
+                col_s_real = _match_col(col_serie, data_cols)
+                val_serie = row_dict.get(col_s_real or col_serie)
+                if val_serie:
+                    item['serie'] = str(val_serie)
+            datos_graf.append(item)
+
+        if not datos_graf:
+            continue
+
+        print(f'  Generando: {titulo} ({len(datos_graf)} pts)...')
+        r = generar_grafico(
+            datos=datos_graf,
+            tipo=tipo,
+            titulo=titulo,
+            etiqueta_x=etiqueta_x,
+            etiqueta_y=etiqueta_y,
+            formato_y=formato_y,
+            output_path=str(charts_dir),
+            timestamp=timestamp,
+        )
+
+        if not r['error']:
+            # Ruta relativa al proyecto para que funcione en markdown
+            ruta_rel = os.path.relpath(r['path'], BASE_DIR)
+            img_md = f"![{titulo}]({ruta_rel})"
+            imagenes.setdefault(bloque_destino, []).append(img_md)
+            print(f'    OK: {ruta_rel}')
+        else:
+            print(f'    Error: {r["error"]}')
+
+    return imagenes
+
+
+def _match_col(col_name, real_cols):
+    """Busca columna en real_cols ignorando mayusculas/minusculas y guiones bajos."""
+    if not col_name:
+        return None
+    col_lower = col_name.lower().replace('_', '').replace(' ', '')
+    for rc in real_cols:
+        if rc.lower().replace('_', '').replace(' ', '') == col_lower:
+            return rc
+    return None
+
 
 def generar_informe(pregunta: str):
     print('\n' + '=' * 60)
@@ -257,7 +444,14 @@ Responde con un JSON con esta estructura exacta:
         return
 
     # ------------------------------------------------------------------
-    # FASE 3: redactar el informe con los bloques seleccionados
+    # FASE 3: generar graficos a partir de los datos obtenidos
+    # ------------------------------------------------------------------
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    print(f'\n[{MODELO}] Generando graficos...')
+    imagenes_por_bloque = generar_graficos_informe(resultados, pregunta, plan, timestamp)
+
+    # ------------------------------------------------------------------
+    # FASE 4: redactar el informe con los bloques seleccionados
     # ------------------------------------------------------------------
     print(f'\n[{MODELO}] Redactando informe...')
     prompt_redaccion = f"""El usuario solicito:
@@ -280,14 +474,23 @@ Instrucciones:
 - Formatea numeros con separador de miles y moneda COP donde corresponda.
 - Si un bloque necesita un dato que no esta disponible, omite ese bloque o indica "Sin informacion".
 """
+    if imagenes_por_bloque:
+        prompt_redaccion += f"""
+### Graficos generados
+Inserta estos graficos como imagenes markdown DESPUES de la tabla de datos
+del bloque correspondiente (nunca antes). Cada bloque indica que graficos
+lleva.
+
+Graficos por bloque:
+{json.dumps(imagenes_por_bloque, ensure_ascii=False, indent=2)}
+"""
     md_informe = llamar_llm(skill_informe, prompt_redaccion, temperatura=0.3)
 
     # ------------------------------------------------------------------
-    # FASE 4: guardar markdown y convertir a DOCX
+    # FASE 5: guardar markdown y convertir a DOCX
     # ------------------------------------------------------------------
     REPORTS_DIR.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r'[^a-z0-9]+', '_', pregunta.lower())[:40].strip('_')
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     ruta_md   = REPORTS_DIR / f'informe_{slug}_{timestamp}.md'
     ruta_docx = REPORTS_DIR / f'Informe_{slug}_{timestamp}.docx'
 

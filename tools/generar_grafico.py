@@ -1,0 +1,357 @@
+#!/usr/bin/env python3
+"""
+Tool: generar_grafico
+Genera graficos PNG a partir de datos tabulares usando matplotlib.
+No consulta la base de datos — solo recibe datos ya obtenidos.
+
+Tipos: linea | barras_horizontales | barras_verticales | barras_agrupadas | torta
+"""
+import os
+import hashlib
+from datetime import datetime
+from pathlib import Path
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter
+import numpy as np
+
+# --- Paleta corporativa ---
+COLOR_PRINCIPAL = '#2F5496'
+COLOR_GRIS      = '#A6A6A6'
+COLOR_ALERTA    = '#C00000'
+COLOR_FONDO     = '#FAFAFA'
+COLOR_TEXTO     = '#333333'
+COLOR_SPINE     = '#D0D0D0'
+
+DPI = 150
+TAMANO_DEFECTO  = (8, 4.5)
+TAMANO_TORTA    = (6, 6)
+
+
+def aplicar_estilo_creytex(fig, ax):
+    ax.set_facecolor(COLOR_FONDO)
+    fig.patch.set_facecolor('white')
+    ax.grid(True, axis='y', alpha=0.3, linestyle='--', color=COLOR_GRIS)
+    ax.grid(False, axis='x')
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_color(COLOR_SPINE)
+    ax.spines['bottom'].set_color(COLOR_SPINE)
+    ax.tick_params(colors=COLOR_TEXTO, labelsize=9)
+    ax.yaxis.set_major_formatter(FuncFormatter(_formatear_y))
+
+
+def _formatear_y(valor, _pos, fmt='moneda'):
+    if fmt == 'moneda':
+        return f'${valor:,.0f}'
+    elif fmt == 'unidades':
+        return f'{valor:,.0f}'
+    elif fmt == 'porcentaje':
+        return f'{valor:.1f}%'
+    return f'{valor:,.0f}'
+
+
+def _generar_nombre(titulo, timestamp=None):
+    if timestamp:
+        ts = timestamp
+    else:
+        ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    slug = re.sub(r'[^a-z0-9]+', '_', titulo.lower())[:40].strip('_')
+    return f'chart_{slug}_{ts}.png'
+
+
+def generar_grafico(
+    datos,
+    tipo,
+    titulo,
+    etiqueta_x='',
+    etiqueta_y='',
+    output_path='reports/charts/',
+    formato_y='moneda',
+    timestamp=None,
+):
+    """
+    Genera un grafico PNG a partir de datos tabulares.
+
+    Parametros
+    ----------
+    datos : list[dict]
+        Cada dict representa una fila con claves 'x', 'y' (y opcional 'serie').
+        Ej: [{"x": "ANTIOQUIA", "y": 33632}, {"x": "BOGOTA", "y": 16288}]
+    tipo : str
+        linea | barras_horizontales | barras_verticales | barras_agrupadas | torta
+    titulo : str
+    etiqueta_x, etiqueta_y : str
+    output_path : str
+        Directorio donde se guarda el PNG.
+    formato_y : str
+        moneda | unidades | porcentaje
+    timestamp : str or None
+        Para vincular al informe. Formato YYYYMMDD_HHMMSS.
+
+    Retorna
+    -------
+    dict {"path": ..., "width_px": ..., "height_px": ..., "error": None|str}
+    """
+    import re as _re
+    globals()['re'] = _re
+
+    # --- Validaciones ---
+    if not datos or not isinstance(datos, list) or len(datos) == 0:
+        return {'path': None, 'width_px': 0, 'height_px': 0, 'error': 'Datos vacios o invalidos.'}
+
+    tipo = tipo.lower().strip()
+    tipos_validos = {'linea', 'barras_horizontales', 'barras_verticales', 'barras_agrupadas', 'torta'}
+    if tipo not in tipos_validos:
+        return {'path': None, 'width_px': 0, 'height_px': 0, 'error': f'Tipo no soportado: {tipo}. Usar: {", ".join(sorted(tipos_validos))}'}
+
+    # --- Pie: rechazar si >5 categorias ---
+    if tipo == 'torta' and len(datos) > 5:
+        return {
+            'path': None, 'width_px': 0, 'height_px': 0,
+            'error': f'Demasiadas categorias ({len(datos)}) para grafico de torta. Usar "barras_horizontales" en su lugar.'
+        }
+
+    # --- Determinar tamaño ---
+    size = TAMANO_TORTA if tipo == 'torta' else TAMANO_DEFECTO
+    fig, ax = plt.subplots(figsize=size, dpi=DPI)
+
+    # --- Procesar datos ---
+    x_vals  = [str(d.get('x', '')) for d in datos]
+    y_vals  = [float(d.get('y', 0)) for d in datos]
+    series  = [d.get('serie', None) for d in datos]
+
+    # --- Formateador Y con el formato solicitado ---
+    fmt_y = formato_y
+    def formatter(val, _pos):
+        return _formatear_y(val, _pos, fmt=fmt_y)
+    ax.yaxis.set_major_formatter(FuncFormatter(formatter))
+
+    try:
+        if tipo == 'linea':
+            ax.plot(x_vals, y_vals, color=COLOR_PRINCIPAL, linewidth=2, marker='o', markersize=5)
+            ax.fill_between(range(len(x_vals)), y_vals, alpha=0.08, color=COLOR_PRINCIPAL)
+            ax.set_xticks(range(len(x_vals)))
+            ax.set_xticklabels(x_vals, rotation=30, ha='right', fontsize=8)
+            aplicar_estilo_creytex(fig, ax)
+            ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
+            ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
+            ax.set_ylabel(etiqueta_y, fontsize=10, color=COLOR_TEXTO, labelpad=8)
+
+        elif tipo == 'barras_horizontales':
+            indices = list(range(len(x_vals)))
+            colores = [COLOR_ALERTA if _es_alerta(v, y_vals) else COLOR_PRINCIPAL for v in y_vals]
+            ax.barh(indices, y_vals, color=colores, height=0.65, edgecolor='white', linewidth=0.3)
+            ax.set_yticks(indices)
+            ax.set_yticklabels(x_vals, fontsize=9)
+            ax.invert_yaxis()
+            aplicar_estilo_creytex(fig, ax)
+            ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
+            ax.set_xlabel(etiqueta_y or '', fontsize=10, color=COLOR_TEXTO, labelpad=8)
+            for i, v in enumerate(y_vals):
+                ax.text(v + abs(max(y_vals)) * 0.01, i, formatter(v, None),
+                        va='center', fontsize=8, color=COLOR_TEXTO)
+
+        elif tipo == 'barras_verticales':
+            indices = np.arange(len(x_vals))
+            colores = [COLOR_ALERTA if _es_alerta(v, y_vals) else COLOR_PRINCIPAL for v in y_vals]
+            ax.bar(indices, y_vals, color=colores, width=0.6, edgecolor='white', linewidth=0.3)
+            ax.set_xticks(indices)
+            ax.set_xticklabels(x_vals, rotation=30, ha='right', fontsize=8)
+            aplicar_estilo_creytex(fig, ax)
+            ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
+            ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
+            ax.set_ylabel(etiqueta_y, fontsize=10, color=COLOR_TEXTO, labelpad=8)
+
+        elif tipo == 'barras_agrupadas':
+            if not any(d.get('serie') for d in datos):
+                plt.close(fig)
+                return {'path': None, 'width_px': 0, 'height_px': 0, 'error': 'barras_agrupadas requiere clave "serie" en cada dict de datos.'}
+            _graficar_barras_agrupadas(ax, datos, formatter)
+            aplicar_estilo_creytex(fig, ax)
+            ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
+            ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
+            ax.set_ylabel(etiqueta_y, fontsize=10, color=COLOR_TEXTO, labelpad=8)
+
+        elif tipo == 'torta':
+            explode = [0.05] + [0] * (len(x_vals) - 1)
+            colores_torta = [COLOR_PRINCIPAL, COLOR_GRIS, '#5B9BD5', '#ED7D31', '#70AD47'][:len(x_vals)]
+            wedges, texts, autotexts = ax.pie(
+                y_vals, labels=x_vals, autopct='%1.1f%%', startangle=90,
+                colors=colores_torta, explode=explode, pctdistance=0.75,
+                wedgeprops={'edgecolor': 'white', 'linewidth': 1},
+            )
+            for t in texts:
+                t.set_fontsize(9)
+                t.set_color(COLOR_TEXTO)
+            for t in autotexts:
+                t.set_fontsize(8)
+                t.set_color('white')
+                t.set_fontweight('bold')
+            ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=16)
+
+        # --- Guardar ---
+        out_dir = Path(output_path)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        nombre = _generar_nombre(titulo, timestamp)
+        ruta = out_dir / nombre
+        fig.tight_layout()
+        fig.savefig(ruta, dpi=DPI, bbox_inches='tight', facecolor='white')
+        ancho_px, alto_px = fig.get_size_inches() * DPI
+        plt.close(fig)
+        return {
+            'path': str(ruta),
+            'width_px': int(ancho_px),
+            'height_px': int(alto_px),
+            'error': None,
+        }
+
+    except Exception as e:
+        plt.close(fig)
+        return {'path': None, 'width_px': 0, 'height_px': 0, 'error': str(e)}
+
+
+def _es_alerta(valor, todos):
+    """Marca como alerta el valor mas bajo (para destacar cual necesita atencion)."""
+    if len(todos) < 3:
+        return False
+    return valor == min(todos)
+
+
+def _graficar_barras_agrupadas(ax, datos, formatter):
+    from collections import OrderedDict
+    grupos = OrderedDict()
+    etiquetas_series = []
+    for d in datos:
+        x = str(d.get('x', ''))
+        s = str(d.get('serie', ''))
+        v = float(d.get('y', 0))
+        if x not in grupos:
+            grupos[x] = {}
+        grupos[x][s] = v
+        if s not in etiquetas_series:
+            etiquetas_series.append(s)
+
+    n_series = len(etiquetas_series)
+    n_grupos = len(grupos)
+    x = np.arange(n_grupos)
+    ancho = 0.7 / n_series
+    colores_serie = [COLOR_PRINCIPAL, COLOR_GRIS, '#5B9BD5', '#ED7D31', '#70AD47']
+
+    for i, serie_nombre in enumerate(etiquetas_series):
+        valores = [grupos[g].get(serie_nombre, 0) for g in grupos]
+        offset = (i - (n_series - 1) / 2) * ancho
+        bars = ax.bar(x + offset, valores, ancho * 0.9,
+                      label=serie_nombre, color=colores_serie[i % len(colores_serie)],
+                      edgecolor='white', linewidth=0.3)
+
+    ax.set_xticks(x)
+    ax.set_xticklabels(list(grupos.keys()), rotation=30, ha='right', fontsize=8)
+    ax.legend(fontsize=8, framealpha=0.9, edgecolor=COLOR_SPINE)
+
+
+# ===================================================================
+# Ejemplos de uso (ejecutar directamente para validar visualmente)
+# ===================================================================
+if __name__ == '__main__':
+    import json
+    import re
+
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+
+    # --- 1. Barras verticales ---
+    print('Ejemplo 1: Barras verticales')
+    r1 = generar_grafico(
+        datos=[
+            {'x': 'ANTIOQUIA',     'y': 33632},
+            {'x': 'BOGOTA',        'y': 16288},
+            {'x': 'ATLANTICO',     'y': 8794},
+            {'x': 'BOLIVAR',       'y': 8365},
+            {'x': 'SANTANDER',     'y': 6611},
+        ],
+        tipo='barras_verticales',
+        titulo='Unidades Vendidas por Departamento',
+        etiqueta_x='Departamento',
+        etiqueta_y='Unidades',
+        formato_y='unidades',
+        timestamp=ts,
+    )
+    print(json.dumps(r1, indent=2))
+
+    # --- 2. Barras horizontales ---
+    print('\nEjemplo 2: Barras horizontales')
+    r2 = generar_grafico(
+        datos=[
+            {'x': 'ANTIOQUIA',     'y': 2647590911},
+            {'x': 'BOGOTA',        'y': 1284493146},
+            {'x': 'ATLANTICO',     'y': 632738932},
+            {'x': 'BOLIVAR',       'y': 629362725},
+            {'x': 'SANTANDER',     'y': 515300064},
+        ],
+        tipo='barras_horizontales',
+        titulo='Valor de Ventas por Departamento (COP)',
+        etiqueta_y='Departamento',
+        formato_y='moneda',
+        timestamp=ts,
+    )
+    print(json.dumps(r2, indent=2))
+
+    # --- 3. Linea ---
+    print('\nEjemplo 3: Linea')
+    r3 = generar_grafico(
+        datos=[
+            {'x': 'Ene', 'y': 12000},
+            {'x': 'Feb', 'y': 14500},
+            {'x': 'Mar', 'y': 13200},
+            {'x': 'Abr', 'y': 15800},
+            {'x': 'May', 'y': 14200},
+            {'x': 'Jun', 'y': 16500},
+        ],
+        tipo='linea',
+        titulo='Tendencia Mensual de Unidades Vendidas',
+        etiqueta_x='Mes',
+        etiqueta_y='Unidades',
+        formato_y='unidades',
+        timestamp=ts,
+    )
+    print(json.dumps(r3, indent=2))
+
+    # --- 4. Torta ---
+    print('\nEjemplo 4: Torta (participacion)')
+    r4 = generar_grafico(
+        datos=[
+            {'x': 'ANTIOQUIA', 'y': 33.6},
+            {'x': 'BOGOTA',    'y': 16.3},
+            {'x': 'ATLANTICO', 'y': 8.8},
+            {'x': 'BOLIVAR',   'y': 8.4},
+            {'x': 'SANTANDER', 'y': 6.6},
+        ],
+        tipo='torta',
+        titulo='Participacion por Departamento (%)',
+        formato_y='porcentaje',
+        timestamp=ts,
+    )
+    print(json.dumps(r4, indent=2))
+
+    # --- 5. Barras agrupadas ---
+    print('\nEjemplo 5: Barras agrupadas')
+    r5 = generar_grafico(
+        datos=[
+            {'x': 'ANTIOQUIA', 'y': 33632, 'serie': 'Semana Actual'},
+            {'x': 'ANTIOQUIA', 'y': 29500, 'serie': 'Semana Anterior'},
+            {'x': 'BOGOTA',    'y': 16288, 'serie': 'Semana Actual'},
+            {'x': 'BOGOTA',    'y': 15100, 'serie': 'Semana Anterior'},
+            {'x': 'ATLANTICO', 'y': 8794,  'serie': 'Semana Actual'},
+            {'x': 'ATLANTICO', 'y': 9200,  'serie': 'Semana Anterior'},
+        ],
+        tipo='barras_agrupadas',
+        titulo='Comparacion Semanal por Departamento',
+        etiqueta_x='Departamento',
+        etiqueta_y='Unidades',
+        formato_y='unidades',
+        timestamp=ts,
+    )
+    print(json.dumps(r5, indent=2))
+
+    print(f'\nTodos los graficos guardados en reports/charts/')
