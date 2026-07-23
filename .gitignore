@@ -10,6 +10,9 @@ data_samples/
 # --- Agent context ---
 foragents/
 
+# --- Notes ---
+notas/
+
 # --- Generated reports ---
 reports/
 
