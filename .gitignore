@@ -1,0 +1,35 @@
+# --- Environments ---
+.env
+
+# --- Development config ---
+.opencode/
+
+# --- Data ---
+data_samples/
+
+# --- Agent context ---
+foragents/
+
+# --- Generated reports ---
+reports/
+
+# --- Notebooks ---
+*.ipynb
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
