@@ -47,13 +47,14 @@ requiera, ni mas ni menos.
 ## Reglas de negocio (siempre aplican, en cualquier bloque)
 
 1. Fuente de ventas: `TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'` y `TRIM("SIGNO") = '-'`.
-2. Valor de venta: `"CANTIDAD" * "PVP"`. Nunca `"PVP LISTA"` para tiendas individuales.
-3. `"PVP LISTA"` solo cuando la pregunta sea sobre macroclientes/cadenas (ej: Exito como cadena).
-4. Fechas: `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')`. Nunca `::DATE`.
-5. Texto con espacios: siempre `TRIM()` en `"SIGNO"`, `"DESC_MOVIMIENTO"`, `"DEPARTAMENTO"`, etc.
-6. **Jerarquía de producto**: `LINEA` → `LINEA_DETLL` (performance/exterior/junior) → `ESTILO_ITEM` (camisa, falda, pantaloneta) → `GRUPO` (manga corta/larga). Usar el nivel que corresponda segun la granularidad que pida el usuario.
-7. No usar: `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU`, `LLAVE_DEP`.
-8. Nunca inventar cifras. Si no hay dato: escribir "Sin informacion".
+2. DESC_MOVIMIENTO solo tiene 3 valores válidos: `'VENTAS POS'`, `'CAMBIOS DE MERCANCIA ACLIENTE'`, `'DEVOLUCIÓN AL PROVEEDOR'`.
+3. Valor de venta: `"CANTIDAD" * "PVP"`. Nunca `"PVP LISTA"` para tiendas individuales.
+4. `"PVP LISTA"` solo cuando la pregunta sea sobre macroclientes/cadenas (ej: Exito como cadena).
+5. Fechas: `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')`. Nunca `::DATE`.
+6. Texto con espacios: siempre `TRIM()` en `"SIGNO"`, `"DESC_MOVIMIENTO"`, `"DEPARTAMENTO"`, etc.
+7. **Jerarquía de producto**: `LINEA` → `LINEA_DETLL` (performance/exterior/junior) → `ESTILO_ITEM` (camisa, falda, pantaloneta) → `GRUPO` (manga corta/larga). Usar el nivel que corresponda segun la granularidad que pida el usuario.
+8. No usar: `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU`, `LLAVE_DEP`.
+9. Nunca inventar cifras. Si no hay dato: escribir "Sin informacion".
 
 ---
 

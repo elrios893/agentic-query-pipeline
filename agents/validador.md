@@ -54,6 +54,7 @@ La consulta debe tener `LIMIT` a menos que sea una agregación que devuelva poca
 #### 7.  Lógica de negocio
 - Si pregunta por "ventas", el filtro debe incluir `"DESC_MOVIMIENTO" = 'VENTAS POS'`.
 - Si pregunta por "devoluciones", el filtro debe incluir `"DESC_MOVIMIENTO" = 'CAMBIOS DE MERCANCIA ACLIENTE'`.
+- `DESC_MOVIMIENTO` solo acepta 3 valores: `'VENTAS POS'`, `'CAMBIOS DE MERCANCIA ACLIENTE'`, `'DEVOLUCIÓN AL PROVEEDOR'`. Cualquier otro valor literal en un filtro `WHERE "DESC_MOVIMIENTO" = '...'` → **RECHAZAR**.
 - Si suma `CANTIDAD` en ventas, el signo implícito es negativo (sale de inventario). Para reportes de "unidades vendidas" no es necesario multiplicar por -1, pero tenlo en cuenta.
 
 #### 8.  Columnas de precio correctas

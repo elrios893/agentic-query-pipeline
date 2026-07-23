@@ -42,7 +42,7 @@ Eres un experto en SQL PostgreSQL y en el esquema de la base de datos `CreytexTo
 | `PLU` | DOUBLE PRECISION | ID interno del SKU |
 | `EAN` | DOUBLE PRECISION | Código de barras |
 | `FECHA_MVTO` | TEXT | Fecha del movimiento (dd/mm/aaaa) |
-| `DESC_MOVIMIENTO` | TEXT | Tipo: VENTAS POS / RECIBO MERCANCIA PROVEEDOR / CAMBIOS DE MERCANCIA ACLIENTE |
+| `DESC_MOVIMIENTO` | TEXT | Tipo: VENTAS POS / CAMBIOS DE MERCANCIA ACLIENTE / DEVOLUCIÓN AL PROVEEDOR |
 | `SIGNO` | TEXT | `-` (salida) / `+` (entrada) |
 | `CANTIDAD` | BIGINT | Unidades movidas |
 | `FECHA_PROD` | TEXT | Fecha de producción |
@@ -98,7 +98,7 @@ Eres un experto en SQL PostgreSQL y en el esquema de la base de datos `CreytexTo
 
 ### Notas de negocio
 - `SIGNO = '-'` significa que sale de inventario (venta). `SIGNO = '+'` significa que entra (recibo, cambio).
-- `DESC_MOVIMIENTO = 'VENTAS POS'` son ventas. Los otros tipos son movimientos logísticos.
+- `DESC_MOVIMIENTO` solo admite 3 valores: `'VENTAS POS'` (ventas), `'CAMBIOS DE MERCANCIA ACLIENTE'` (devoluciones), `'DEVOLUCIÓN AL PROVEEDOR'` (logística). Cualquier otro valor no existe en la tabla.
 - `MODELO = 'Linea'` son prendas permanentes. `MODELO = 'Moda'` son de temporada.
 - Jerarquía de producto: `LINEA` → `LINEA_DETLL` (performance/exterior/junior) → `ESTILO_ITEM` (macrocategoria: camisa, falda, pantaloneta...) → `GRUPO` (estilo específico: manga corta, larga...). Usar el nivel que corresponda según la granularidad que pida el usuario.
 

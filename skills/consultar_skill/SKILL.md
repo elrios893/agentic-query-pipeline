@@ -118,8 +118,8 @@ Usa `DESC_MOVIMIENTO` para filtrar por tipo de operación. Valores posibles:
 | Valor | Significado |
 |-------|-------------|
 | `VENTAS POS` | Ventas en punto de venta |
-| `RECIBO MERCANCIA PROVEEDOR` | Recepción de mercancía |
-| `CAMBIOS DE MERCANCIA ACLIENTE` | Cambios o devoluciones |
+| `CAMBIOS DE MERCANCIA ACLIENTE` | Cambios o devoluciones de clientes |
+| `DEVOLUCIÓN AL PROVEEDOR` | Devoluciones a proveedor |
 
 ✅ Correcto: `SELECT * FROM ventas WHERE "DESC_MOVIMIENTO" = 'VENTAS POS' LIMIT 20;`
 
