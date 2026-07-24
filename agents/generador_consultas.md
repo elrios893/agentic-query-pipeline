@@ -54,41 +54,35 @@ Eres un experto en SQL PostgreSQL y en el esquema de la base de datos `CreytexTo
 | `GTIN_ALMACEN` | DOUBLE PRECISION | Código ubicación tienda |
 | `COD_SIESA` | DOUBLE PRECISION | Código tienda en ERP |
 | `DESC_DEPENDENCIA` | TEXT | Nombre de tienda |
-| `CLIMA` | TEXT | CALIDO, FRIO o TEMPLADO |
+| `CLIMA` | TEXT | CALIDO / FRIO / TEMPLADO |
 | `DEPARTAMENTO` | TEXT | Departamento |
 | `CIUDAD` | TEXT | Ciudad |
 | `ZONA` | TEXT | Zona |
 | `ZONA_EX` | TEXT | Zona Éxito |
 | `LLAVE_DEP2` | DOUBLE PRECISION | Llave bodega+ubicación |
 | `ESTADO_TIENDA` | TEXT | Estado de la tienda |
-| `LLAVE_DEP` | TEXT | (siempre nulo) |
 | `REFERENCIA` | TEXT | Referencia interna de prenda |
 | `DESC_ITEM` | TEXT | Descripción de la prenda |
 | `COD_COLOR` | DOUBLE PRECISION | Código de color |
 | `COLOR` | TEXT | Color |
 | `TALLA` | TEXT | Talla |
-| `LINEA_GEN` | TEXT | Género: A (Bebes), J (Junior), M (Hombres), U (Unisex), W (Mujer) |
-| `LINEA_DETLL` | TEXT | Categoría: A (Bebes), B (Beachwear), E (Exterior), J (Junior), L (Leasurewear), P (Performance) |
-| `ESTILO_ITEM` | TEXT | Macrocategoria: 01 (Top), 02 (Camiseta), 04 (Blusa), 05 (Camisa), 07 (Chaqueta), 08 (Buzo), 09 (Vestido), 10 (Enterizo), 14 (Pantalones), 17 (Jogger), 20 (Falda), 22 (Conjunto), 24 (Gorra), 27 (Bolso) |
-| `GRUPO` | TEXT | Estilo específico dentro de la macrocategoria: camisa manga corta/larga, falda larga/corta |
+| `LINEA_GEN` | TEXT | Género: A(Bebes) J(Junior) M(Hombres) U(Unisex) W(Mujer) |
+| `LINEA_DETLL` | TEXT | Categoría: A(Bebes) B(Beachwear) E(Exterior) J(Junior) L(Leasurewear) P(Performance) |
+| `ESTILO_ITEM` | TEXT | Macrocategoria: 01(Top) 02(Camiseta) 04(Blusa) 05(Camisa) 07(Chaqueta) 08(Buzo) 09(Vestido) 10(Enterizo) 14(Pantalones) 17(Jogger) 20(Falda) 22(Conjunto) 24(Gorra) 27(Bolso) |
+| `GRUPO` | TEXT | Estilo específico (manga corta/larga, falda larga/corta) |
 | `LINEA` | TEXT | Línea de la prenda |
-| `MARCA` | TEXT | 0002 (Baby Planet), 0012 (Bata), 0018 (Amazon Mint), 8888 (Na), B (Belife) |
-| `TIPO_DE_NEGOCIO` | TEXT | Origen de venta: 0001 (Marca propia), 0003 (Paquete completo nacional), 0004 (Paquete completo exportacion) |
+| `MARCA` | TEXT | 0002(Baby Planet) 0012(Bata) 0018(Amazon Mint) 8888(Na) B(Belife) |
+| `TIPO_DE_NEGOCIO` | TEXT | 0001(Marca propia) 0003(PC nacional) 0004(PC exportacion) |
 | `CUENTO` | TEXT | Colección |
 | `TIPO_PORTAFOLIO_MOD` | TEXT | Tipo portafolio |
-| `FCH_ACT_PORTAFOLIO` | TEXT | (casi siempre nulo) |
 | `ESTADO_SKU_MOD` | TEXT | Estado SKU |
-| `FCH_ACT_SKU` | TEXT | (casi siempre nulo) |
 | `PERFIL_PRENDA` | TEXT | Inferior / Superior |
 | `CAMBIO_PORTAFOLIO?` | DOUBLE PRECISION | Flag cambio |
 | `PVP` | DOUBLE PRECISION | Precio venta consumidor |
-| `PVP LISTA` | DOUBLE PRECISION | Precio venta macro |
-| `PVP HIST` | DOUBLE PRECISION | (siempre nulo) |
-| `PVP HIST LISTA` | DOUBLE PRECISION | (siempre nulo) |
+| `PVP LISTA` | DOUBLE PRECISION | Precio venta macro (solo cadenas) |
 | `VENTA $ PVP LISTA` | DOUBLE PRECISION | Venta $ a precio lista |
-| `VENTA $ PVP HIST LISTA` | DOUBLE PRECISION | (siempre nulo) |
 | `DESC_GRUPO` | TEXT | Descripción grupo |
-| `MODELO` | TEXT | Linea o Moda |
+| `MODELO` | TEXT | Linea(permanente) / Moda(temporada) |
 | `LINEA_MY` | TEXT | Línea MY |
 | `LLAVE_NAVAL` | TEXT | COD_BODEGA + DEPENDENCIA + LINEA_MY |
 | `ESTADO_LINEA` | TEXT | Activa / Inactiva |

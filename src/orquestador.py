@@ -48,6 +48,35 @@ SKILLS_DIR = BASE_DIR / 'skills'
 REPORTS_DIR = BASE_DIR / 'reports'
 MAX_ITERACIONES = 3
 
+# ---------------------------------------------------------------------------
+# Reglas adicionales inyectadas en el system prompt del generador y validador.
+# Definidas una sola vez aqui para evitar duplicacion.
+# ---------------------------------------------------------------------------
+REGLAS_GEN = """
+
+### Reglas adicionales obligatorias
+1. Siempre usa comillas dobles en TODOS los nombres de columna.
+2. Usa TRIM() en columnas de texto: TRIM("SIGNO"), TRIM("DEPARTAMENTO"), TRIM("DESC_MOVIMIENTO").
+3. "SIGNO" puede ser null, '-' con espacios, o '+' con espacios.
+4. FECHA_MVTO es TEXT DD/MM/AAAA. Usa TO_DATE("FECHA_MVTO", 'DD/MM/YYYY'). NO uses ::DATE.
+5. Para valor de ventas usa "CANTIDAD" * "PVP". NUNCA uses "PVP LISTA" para tiendas individuales.
+6. "PVP LISTA" SOLO se usa si la consulta es sobre clientes MACRO (cadenas), no tiendas.
+7. Si un alias tiene mayusculas (ej: "Ventas"), ponle comillas dobles en ORDER BY y GROUP BY: ORDER BY "Ventas" DESC.
+8. Textos siempre en mayusculas: DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM deben usar UPPER(TRIM(...)) en SELECT.
+"""
+
+REGLAS_VAL = """
+
+### Reglas adicionales obligatorias
+1. Verifica que TODOS los nombres de columna esten entre comillas dobles.
+2. Verifica uso de TRIM() en filtros de texto.
+3. No aceptes LIMIT en COUNT(*) o agregaciones simples.
+4. Rechaza "FECHA_MVTO"::DATE. Debe ser TO_DATE().
+5. Revisa que use "CANTIDAD" * "PVP" para valor de ventas, no "PVP LISTA" (a menos que sea consulta macro).
+6. Revisa que los alias con mayusculas usen comillas dobles en ORDER BY/GROUP BY.
+7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER, RECHAZAR.
+"""
+
 PATRONES_INFORME = re.compile(
     r'\b(informe|reporte|report|documento|word|docx|'
     r'resumen.*mensual|balance.*mes|'
@@ -65,6 +94,55 @@ def leer_instrucciones(archivo: str) -> str:
 def leer_skill(nombre: str) -> str:
     ruta = SKILLS_DIR / nombre / 'SKILL.md'
     return ruta.read_text(encoding='utf-8')
+
+def leer_skill_sin_yaml(nombre: str) -> str:
+    """Lee un skill eliminando el bloque YAML front matter para ahorrar tokens."""
+    contenido = leer_skill(nombre)
+    if contenido.startswith('---'):
+        partes = contenido.split('---', 2)
+        if len(partes) >= 3:
+            return partes[2].strip()
+    return contenido
+
+def leer_skill_bloques_resumen(nombre: str) -> str:
+    """Extrae solo los encabezados de bloque del skill de informes para el planning.
+    Ahorra ~2,500 tokens en la llamada de planificacion."""
+    contenido = leer_skill_sin_yaml(nombre)
+    lineas = contenido.split('\n')
+    resumen = []
+    capturando = False
+    for linea in lineas:
+        # Incluir reglas de negocio y encabezados de bloque, omitir el detalle
+        if linea.startswith('## Reglas de negocio') or linea.startswith('## Como elegir'):
+            capturando = True
+        if linea.startswith('### BLOQUE'):
+            capturando = True
+        if capturando:
+            resumen.append(linea)
+            # Despues del encabezado del bloque, tomar solo las 2 primeras lineas de contenido
+            if linea.startswith('### BLOQUE') and len(resumen) > 1:
+                capturando = False  # reset para tomar solo el header
+    # Estrategia mas simple y robusta: extraer bloques por patron
+    bloques = []
+    patron = re.compile(r'(### BLOQUE [A-Z] —.*?)(?=### BLOQUE [A-Z] —|\Z)', re.DOTALL)
+    for m in patron.finditer(contenido):
+        bloque_texto = m.group(1)
+        lineas_bloque = [l for l in bloque_texto.strip().split('\n') if l.strip()]
+        # Header + "Cuando usar" solamente
+        header = lineas_bloque[0] if lineas_bloque else ''
+        cuando = next((l for l in lineas_bloque if 'Cuando usar' in l or l.startswith('**Cuando')), '')
+        desc = next((l for l in lineas_bloque[1:4] if l.strip() and not l.startswith('**')), '')
+        bloques.append(f"{header}\n{cuando}\n{desc}".strip())
+    reglas = []
+    in_reglas = False
+    for linea in lineas:
+        if '## Reglas de negocio' in linea:
+            in_reglas = True
+        if in_reglas:
+            reglas.append(linea)
+        if in_reglas and linea.startswith('## ') and '## Reglas de negocio' not in linea:
+            break
+    return '\n'.join(reglas) + '\n\n## Bloques disponibles\n\n' + '\n\n'.join(bloques)
 
 def limpiar_texto(texto: str) -> str:
     return ''.join(c for c in texto if unicodedata.category(c) != 'So').strip()
@@ -148,7 +226,7 @@ Pregunta original del usuario: {pregunta}"""
             sys.exit(1)
 
 def generar_graficos_informe(resultados, pregunta, plan, timestamp):
-    skill_graficos = leer_skill('graficos_ventas')
+    skill_graficos = leer_skill_sin_yaml('graficos_ventas')
 
     # Construir resumen de columnas disponibles por consulta
     resumen_columnas = {}
@@ -161,12 +239,7 @@ def generar_graficos_informe(resultados, pregunta, plan, timestamp):
                 'columnas': cols,
             }
 
-    prompt = f"""Eres un consultor de visualizacion de datos.
-
-Skill de graficos disponible:
-{skill_graficos}
-
-Resumen de datos disponibles (columnas exactas):
+    prompt = f"""Resumen de datos disponibles (columnas exactas):
 {json.dumps(resumen_columnas, ensure_ascii=False, indent=2)}
 
 Pregunta del usuario: "{pregunta}"
@@ -309,34 +382,14 @@ def generar_informe(pregunta: str):
 
     instrucciones_gen = leer_instrucciones('generador_consultas.md')
     instrucciones_val = leer_instrucciones('validador.md')
-    skill_informe     = leer_skill('informe_ventas')
+    skill_informe_planning  = leer_skill_bloques_resumen('informe_ventas')
+    skill_informe_redaccion = leer_skill_sin_yaml('informe_ventas')
 
     extraer_system_gen = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_gen, re.DOTALL)
     extraer_system_val = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_val, re.DOTALL)
 
-    reglas_extra_gen = """
-
-### Reglas adicionales obligatorias
-1. Siempre usa comillas dobles en TODOS los nombres de columna.
-2. Usa TRIM() en columnas de texto: TRIM("SIGNO"), TRIM("DEPARTAMENTO"), TRIM("DESC_MOVIMIENTO").
-3. "SIGNO" puede ser null, '-' con espacios, o '+' con espacios.
-4. FECHA_MVTO es TEXT DD/MM/AAAA. Usa TO_DATE("FECHA_MVTO", 'DD/MM/YYYY'). NO uses ::DATE.
-5. Para valor de ventas usa "CANTIDAD" * "PVP". NUNCA uses "PVP LISTA" para tiendas individuales.
-6. "PVP LISTA" SOLO se usa si la consulta es sobre clientes MACRO (cadenas), no tiendas.
-7. Si un alias tiene mayusculas (ej: "Ventas"), ponle comillas dobles en ORDER BY y GROUP BY: ORDER BY "Ventas" DESC.
-8. **Textos siempre en mayusculas**: DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM deben usar UPPER(TRIM(...)) en SELECT. Ej: UPPER(TRIM("DEPARTAMENTO")) AS "DEPARTAMENTO".
-"""
-    reglas_extra_val = """
-
-### Reglas adicionales obligatorias
-1. Verifica que TODOS los nombres de columna esten entre comillas dobles.
-2. Verifica uso de TRIM() en filtros de texto.
-3. No aceptes LIMIT en COUNT(*) o agregaciones simples.
-4. Rechaza "FECHA_MVTO"::DATE. Debe ser TO_DATE().
-5. Revisa que use "CANTIDAD" * "PVP" para valor de ventas, no "PVP LISTA" (a menos que sea consulta macro).
-6. Revisa que los alias con mayusculas usen comillas dobles en ORDER BY/GROUP BY. Sin comillas PostgreSQL los dobla a minusculas y no encuentra el alias.
-7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER, RECHAZAR.
-"""
+    reglas_extra_gen = REGLAS_GEN
+    reglas_extra_val = REGLAS_VAL
 
     system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + reglas_extra_gen
     system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + reglas_extra_val
@@ -348,7 +401,7 @@ def generar_informe(pregunta: str):
 "{pregunta}"
 
 Tienes disponible la siguiente skill de informes que define los bloques disponibles:
-{skill_informe}
+{skill_informe_planning}
 
 Tu tarea es determinar que datos necesitas consultar en PostgreSQL para construir
 ese informe. Genera UNA consulta SQL por cada bloque de datos que necesites.
@@ -458,7 +511,7 @@ Responde con un JSON con esta estructura exacta:
 "{pregunta}"
 
 Usa la siguiente skill para redactar el informe en Markdown:
-{skill_informe}
+{skill_informe_redaccion}
 
 Bloques seleccionados para este informe: {plan.get('bloques', [])}
 
@@ -484,7 +537,7 @@ lleva.
 Graficos por bloque:
 {json.dumps(imagenes_por_bloque, ensure_ascii=False, indent=2)}
 """
-    md_informe = llamar_llm(skill_informe, prompt_redaccion, temperatura=0.3)
+    md_informe = llamar_llm(skill_informe_redaccion, prompt_redaccion, temperatura=0.3)
 
     # ------------------------------------------------------------------
     # FASE 5: guardar markdown y convertir a DOCX
@@ -525,29 +578,8 @@ def procesar_consulta(pregunta: str):
     extraer_system_val = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_val, re.DOTALL)
     extraer_system_red = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_red, re.DOTALL)
 
-    system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + """
-
-### Reglas adicionales obligatorias
-1. Siempre usa comillas dobles en TODOS los nombres de columna.
-2. Usa TRIM() en columnas de texto: TRIM("SIGNO"), TRIM("DEPARTAMENTO"), TRIM("DESC_MOVIMIENTO").
-3. "SIGNO" puede ser null, '-' con espacios, o '+' con espacios.
-4. FECHA_MVTO es TEXT DD/MM/AAAA. Usa TO_DATE("FECHA_MVTO", 'DD/MM/YYYY'). NO uses ::DATE.
-5. Para valor de ventas usa "CANTIDAD" * "PVP". NUNCA uses "PVP LISTA" para tiendas individuales.
-6. "PVP LISTA" SOLO se usa si la consulta es sobre clientes MACRO (cadenas), no tiendas.
-7. Si un alias tiene mayusculas (ej: "Ventas"), ponle comillas dobles en ORDER BY y GROUP BY: ORDER BY "Ventas" DESC.
-8. Textos siempre en mayusculas: DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM deben usar UPPER(TRIM(...)).
-"""
-    system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + """
-
-### Reglas adicionales obligatorias
-1. Verifica que TODOS los nombres de columna esten entre comillas dobles.
-2. Verifica uso de TRIM() en filtros de texto.
-3. No aceptes LIMIT en COUNT(*) o agregaciones.
-4. Rechaza "FECHA_MVTO"::DATE. Debe ser TO_DATE().
-5. Revisa que use "CANTIDAD" * "PVP" para valor de ventas, no "PVP LISTA" (a menos que sea consulta macro).
-6. Revisa que los alias con mayusculas usen comillas dobles en ORDER BY/GROUP BY.
-7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER, RECHAZAR.
-"""
+    system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + REGLAS_GEN
+    system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + REGLAS_VAL
     system_red = extraer_system_red.group(1).strip() if extraer_system_red else instrucciones_red
 
     sql_final = generar_sql_y_validar(pregunta, system_gen, system_val)

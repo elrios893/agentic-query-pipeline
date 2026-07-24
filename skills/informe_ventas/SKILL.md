@@ -64,7 +64,7 @@ Antes de construir el informe, identificar:
 
 - **Que quiere ver el usuario** — ventas globales, por zona, por producto, por tienda, alertas, etc.
 - **Con que granularidad** — total, por mes, por semana, por departamento, por talla.
-- **Para quien es** — gerencia (resumen ejecutivo + alertas), operaciones (detalle de tiendas), producto (SKUs y tallas).
+- **Para quien es** — gerencia (resumen ejecutivo + alertas), operaciones (detalle de tiendas), producto (Referencias y tallas).
 
 Luego seleccionar de la lista de bloques disponibles. No es necesario usar todos.
 
@@ -185,12 +185,12 @@ Por grupo/referencia:
 | Grupo | Referencia | Unidades | Valor COP |
 |-------|-----------|----------|-----------|
 
-Por SKU (PLU + talla + color):
+Por SKU (Referencia + talla + color):
 | PLU | Descripcion | Talla | Color | Unidades |
 |-----|-------------|-------|-------|----------|
 
 Identificar siempre:
-- El SKU / talla / grupo de mayor rotacion.
+- El Referencia / talla / grupo de mayor rotacion.
 - El de menor rotacion si el contexto lo requiere.
 
 **Datos necesarios:** `GROUP BY "TALLA"`, `"GRUPO"`, `"PLU"`, `"COLOR"` segun lo pedido.
@@ -237,7 +237,7 @@ problemas, riesgos o anomalias. Tambien util al final de cualquier informe ejecu
 
 Tipos de alerta posibles:
 1. Zona o tienda con caida > 15% vs periodo anterior.
-2. SKU con rotacion muy baja (menos del 50% del promedio de su grupo).
+2. Referencia con rotacion muy baja (menos del 50% del promedio de su grupo).
 3. Tiendas inactivas que tenian venta en el periodo previo.
 4. Talla con sobrestock implicito (baja rotacion + alta disponibilidad historica).
 5. Cualquier anomalia que el analisis de los datos revele.
