@@ -1,7 +1,6 @@
 import streamlit as st
 import subprocess
 import re
-import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -9,15 +8,18 @@ ORQUESTADOR = BASE_DIR / 'src' / 'orquestador.py'
 
 st.set_page_config(
     page_title='Creytex — Consultor de Ventas',
-    page_icon='📊',
-    layout='wide',
+    page_icon=':material/bar_chart:',
 )
 
-st.title('📊 Creytex — Consultor Inteligente de Ventas')
-st.markdown('Pregunta sobre ventas en lenguaje natural. Ej: *"ventas por departamento"*, *"graficame top 5 departamentos"*, *"genera un informe"*.')
+SUGERENCIAS = {
+    ':material/assessment: Ventas por departamento': 'ventas por departamento',
+    ':material/bar_chart: Graficame top 5 departamentos': 'graficame top 5 departamentos por ventas',
+    ':material/description: Genera un informe de ventas': 'genera un informe de ventas completo',
+    ':material/sell: Talla mas vendida': 'cual es la talla que mas se vende',
+}
 
-if 'historial' not in st.session_state:
-    st.session_state.historial = []
+if 'messages' not in st.session_state:
+    st.session_state.messages = []
 
 def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str]]:
     try:
@@ -29,18 +31,11 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str]]:
         error = resultado.stderr
 
         if resultado.returncode != 0 and not salida.strip():
-            return f'Error: {error or "El proceso termino con codigo " + str(resultado.returncode)}', []
+            return f'Error: {error or f"El proceso termino con codigo {resultado.returncode}"}', []
 
-        # Extraer seccion RESPUESTA o INFORME
         match = re.search(r'====+\s*(?:RESPUESTA|INFORME)\s*====+\s*(.*)', salida, re.DOTALL)
-        if match:
-            respuesta = match.group(1).strip()
-        else:
-            respuesta = salida.strip()
-
-        # Extraer rutas de imagenes markdown
+        respuesta = match.group(1).strip() if match else salida.strip()
         imagenes = re.findall(r'!\[.*?\]\((.*?)\)', respuesta)
-
         return respuesta, imagenes
 
     except subprocess.TimeoutExpired:
@@ -48,34 +43,47 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str]]:
     except Exception as e:
         return f'Error inesperado: {str(e)}', []
 
+# Sugerencias iniciales
+if not st.session_state.messages:
+    st.title('Consultor Inteligente de Ventas')
+    st.markdown('Pregunta sobre ventas en lenguaje natural.')
+
+    seleccion = st.pills(
+        'Sugerencias:',
+        list(SUGERENCIAS.keys()),
+        label_visibility='collapsed',
+    )
+    if seleccion:
+        prompt = SUGERENCIAS[seleccion]
+        st.session_state.messages.append({'role': 'user', 'content': prompt})
+        st.rerun()
+
+# Historial
+for msg in st.session_state.messages:
+    with st.chat_message(msg['role']):
+        st.markdown(msg['content'])
+        for ruta in msg.get('imagenes', []):
+            ruta_abs = BASE_DIR / ruta
+            if ruta_abs.exists():
+                st.image(str(ruta_abs))
+            else:
+                st.caption(f'[Grafico no encontrado: {ruta}]')
+
 # Input
-col1, col2 = st.columns([5, 1])
-with col1:
-    pregunta = st.chat_input('Escribe tu pregunta sobre ventas...')
-with col2:
-    st.markdown('###  ')
+if prompt := st.chat_input('Escribe tu pregunta sobre ventas...', submit_mode='disable'):
+    st.session_state.messages.append({'role': 'user', 'content': prompt})
+    with st.chat_message('user'):
+        st.markdown(prompt)
 
-if pregunta:
-    st.session_state.historial.append({'rol': 'usuario', 'contenido': pregunta})
+    with st.chat_message('assistant'):
+        with st.spinner('Analizando...'):
+            respuesta, imagenes = ejecutar_pregunta(prompt)
+        st.markdown(respuesta)
+        for ruta in imagenes:
+            ruta_abs = BASE_DIR / ruta
+            if ruta_abs.exists():
+                st.image(str(ruta_abs))
+            else:
+                st.caption(f'[Grafico no encontrado: {ruta}]')
 
-    with st.spinner('Analizando...'):
-        respuesta, imagenes = ejecutar_pregunta(pregunta)
-
-    st.session_state.historial.append({'rol': 'asistente', 'contenido': respuesta, 'imagenes': imagenes})
-
-# Mostrar historial
-for msg in st.session_state.historial:
-    if msg['rol'] == 'usuario':
-        st.chat_message('user').markdown(msg['contenido'])
-    else:
-        with st.chat_message('assistant'):
-            st.markdown(msg['contenido'])
-            for ruta in msg.get('imagenes', []):
-                ruta_abs = BASE_DIR / ruta
-                if ruta_abs.exists():
-                    st.image(str(ruta_abs), use_container_width=True)
-                else:
-                    st.caption(f'[Grafico no encontrado: {ruta}]')
-
-if not st.session_state.historial:
-    st.info('💡 Ejemplos:\n- "ventas por departamento"\n- "graficame top 5 departamentos"\n- "genera un informe de ventas completo"\n- "1 de julio"\n- "talla mas vendida"')
+    st.session_state.messages.append({'role': 'assistant', 'content': respuesta, 'imagenes': imagenes})
