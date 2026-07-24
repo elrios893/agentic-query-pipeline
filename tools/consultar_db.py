@@ -90,7 +90,7 @@ def execute_query(query: str, limit: int = None) -> dict:
 
 if __name__ == '__main__':
     query = os.environ.get('SQL_QUERY')
-    limit = 20
+    limit = 1000
 
     if query:
         if len(sys.argv) > 1 and sys.argv[1].isdigit():

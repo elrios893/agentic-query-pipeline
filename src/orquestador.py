@@ -52,7 +52,16 @@ MAX_ITERACIONES = 3
 # Reglas adicionales inyectadas en el system prompt del generador y validador.
 # Definidas una sola vez aqui para evitar duplicacion.
 # ---------------------------------------------------------------------------
-REGLAS_GEN = """
+def _reglas_gen() -> str:
+    from datetime import datetime
+    anio = datetime.now().year
+    return f"""
+
+### Contexto temporal
+- Hoy es {datetime.now().strftime('%d/%m/%Y')}.
+- La tabla ventas SOLO contiene datos del año {anio}.
+- Cuando el usuario mencione un dia o mes sin especificar año, SIEMPRE usa {anio}.
+- NUNCA uses ningun otro año.
 
 ### Reglas adicionales obligatorias
 1. Siempre usa comillas dobles en TODOS los nombres de columna.
@@ -65,7 +74,10 @@ REGLAS_GEN = """
 8. Textos siempre en mayusculas: DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM deben usar UPPER(TRIM(...)) en SELECT.
 """
 
-REGLAS_VAL = """
+def _reglas_val() -> str:
+    from datetime import datetime
+    anio = datetime.now().year
+    return f"""
 
 ### Reglas adicionales obligatorias
 1. Verifica que TODOS los nombres de columna esten entre comillas dobles.
@@ -75,6 +87,7 @@ REGLAS_VAL = """
 5. Revisa que use "CANTIDAD" * "PVP" para valor de ventas, no "PVP LISTA" (a menos que sea consulta macro).
 6. Revisa que los alias con mayusculas usen comillas dobles en ORDER BY/GROUP BY.
 7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER, RECHAZAR.
+8. Verifica que el año en los literales de fecha sea {anio}. Si ves 2024, 2025 u otro año en una fecha literal, RECHAZAR.
 """
 
 PATRONES_INFORME = re.compile(
@@ -84,8 +97,17 @@ PATRONES_INFORME = re.compile(
     re.IGNORECASE
 )
 
+PATRONES_GRAFICO = re.compile(
+    r'\b(grafic|grafico|grafica|chart|plotea|visualiza|'
+    r'barras|torta|linea|tendencia|distribucion)\b',
+    re.IGNORECASE
+)
+
 def es_intencion_informe(texto: str) -> bool:
     return bool(PATRONES_INFORME.search(texto))
+
+def es_intencion_grafico(texto: str) -> bool:
+    return bool(PATRONES_GRAFICO.search(texto))
 
 def leer_instrucciones(archivo: str) -> str:
     ruta = AGENTS_DIR / archivo
@@ -172,14 +194,19 @@ def llamar_llm(system_prompt: str, user_prompt: str, temperatura: float = 0.1) -
 def extraer_sql(texto: str) -> str:
     bloques = re.findall(r'```sql\s*(.*?)\s*```', texto, re.DOTALL | re.IGNORECASE)
     if bloques:
-        return bloques[0].strip()
-    lineas = texto.strip().split('\n')
-    sql_lines = [l for l in lineas if l.strip().upper().startswith(('SELECT', 'WITH', 'EXPLAIN'))]
-    if sql_lines:
-        return '\n'.join(sql_lines)
-    return texto.strip()
+        sql = bloques[0].strip()
+    else:
+        lineas = texto.strip().split('\n')
+        sql_lines = [l for l in lineas if l.strip().upper().startswith(('SELECT', 'WITH', 'EXPLAIN'))]
+        if sql_lines:
+            sql = '\n'.join(sql_lines)
+        else:
+            sql = texto.strip()
+    if not sql.endswith(';'):
+        sql += ';'
+    return sql
 
-def ejecutar_consulta(sql: str, limite: int = 20) -> dict:
+def ejecutar_consulta(sql: str, limite: int = 1000) -> dict:
     script = TOOLS_DIR / 'consultar_db.py'
     env = os.environ.copy()
     env['SQL_QUERY'] = sql
@@ -375,6 +402,131 @@ def _match_col(col_name, real_cols):
     return None
 
 
+def generar_graficos_consulta(resultado: dict, pregunta: str, timestamp: str) -> list:
+    """
+    Genera graficos para una consulta simple (no informe).
+    Retorna lista de strings markdown de imagenes generadas.
+    """
+    cols = resultado.get('columns', [])
+    rows = resultado.get('rows', [])
+    if not cols or not rows or len(rows) < 2:
+        return []
+
+    skill_graficos = leer_skill_sin_yaml('graficos_ventas')
+
+    resumen = {
+        'consulta': {
+            'filas': len(rows),
+            'columnas': cols,
+        }
+    }
+
+    prompt = f"""Resumen de datos disponibles (columnas exactas):
+{json.dumps(resumen, ensure_ascii=False, indent=2)}
+
+Pregunta del usuario: "{pregunta}"
+
+Decide si tiene sentido generar un grafico con estos datos.
+- Si los datos tienen al menos 2 filas con valores numericos y una columna categorica
+  que pueda servir como eje X, elige el tipo de grafico apropiado.
+- Si no tiene sentido graficar (datos muy pocos, solo una fila, todo texto),
+  responde: []
+- Si tiene sentido, genera hasta 1 grafico.
+
+Responde SOLO con un JSON valido con este formato:
+[
+  {{
+    "nombre": "identificador_unico",
+    "tipo": "barras_horizontales",
+    "titulo": "Titulo del grafico",
+    "etiqueta_x": "Departamento",
+    "etiqueta_y": "Unidades Vendidas",
+    "formato_y": "unidades",
+    "consulta_origen": "consulta",
+    "columna_x": "columna_categorica",
+    "columna_y": "columna_numerica",
+    "columna_serie": null
+  }}
+]
+
+- "columna_x" y "columna_y" deben ser nombres exactos de columna visibles en "columnas".
+- "formato_y": "moneda" | "unidades" | "porcentaje".
+- Si no hay graficos que valgan la pena, responde: []
+"""
+
+    print(f'  Evaluando grafico para consulta...')
+    respuesta = llamar_llm(skill_graficos, prompt, temperatura=0.2)
+
+    bloque_json = re.search(r'\[.*\]', respuesta, re.DOTALL)
+    if not bloque_json:
+        return []
+
+    try:
+        specs = json.loads(bloque_json.group(0))
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(specs, list) or not specs:
+        return []
+
+    import sys as _sys
+    _sys.path.insert(0, str(BASE_DIR))
+    from tools.generar_grafico import generar_grafico
+
+    charts_dir = BASE_DIR / 'reports' / 'charts'
+    imagenes_md = []
+    for spec in specs[:1]:
+        nombre = spec.get('nombre', 'grafico')
+        tipo = spec.get('tipo', 'barras_horizontales')
+        titulo = spec.get('titulo', '')
+        etiqueta_x = spec.get('etiqueta_x', '')
+        etiqueta_y = spec.get('etiqueta_y', '')
+        formato_y = spec.get('formato_y', 'unidades')
+        col_x = spec.get('columna_x', '')
+        col_y = spec.get('columna_y', '')
+
+        data_cols = cols
+        data_rows = rows
+
+        col_x_real = _match_col(col_x, data_cols)
+        col_y_real = _match_col(col_y, data_cols)
+
+        datos_graf = []
+        for row in data_rows:
+            row_dict = dict(zip(data_cols, row))
+            y_val = row_dict.get(col_y_real or col_y, 0)
+            if y_val is None:
+                y_val = 0
+            datos_graf.append({
+                'x': str(row_dict.get(col_x_real or col_x, '')),
+                'y': float(y_val),
+            })
+
+        if not datos_graf:
+            continue
+
+        print(f'  Generando: {titulo} ({len(datos_graf)} pts)...')
+        r = generar_grafico(
+            datos=datos_graf,
+            tipo=tipo,
+            titulo=titulo,
+            etiqueta_x=etiqueta_x,
+            etiqueta_y=etiqueta_y,
+            formato_y=formato_y,
+            output_path=str(charts_dir),
+            timestamp=timestamp,
+        )
+
+        if not r['error']:
+            ruta_rel = os.path.relpath(r['path'], BASE_DIR)
+            imagenes_md.append(f"![{titulo}]({ruta_rel})")
+            print(f'    OK: {ruta_rel}')
+        else:
+            print(f'    Error: {r["error"]}')
+
+    return imagenes_md
+
+
 def generar_informe(pregunta: str):
     print('\n' + '=' * 60)
     print('INTENCION DETECTADA: GENERAR INFORME DE VENTAS')
@@ -388,8 +540,8 @@ def generar_informe(pregunta: str):
     extraer_system_gen = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_gen, re.DOTALL)
     extraer_system_val = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_val, re.DOTALL)
 
-    reglas_extra_gen = REGLAS_GEN
-    reglas_extra_val = REGLAS_VAL
+    reglas_extra_gen = _reglas_gen()
+    reglas_extra_val = _reglas_val()
 
     system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + reglas_extra_gen
     system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + reglas_extra_val
@@ -578,8 +730,8 @@ def procesar_consulta(pregunta: str):
     extraer_system_val = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_val, re.DOTALL)
     extraer_system_red = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_red, re.DOTALL)
 
-    system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + REGLAS_GEN
-    system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + REGLAS_VAL
+    system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + _reglas_gen()
+    system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + _reglas_val()
     system_red = extraer_system_red.group(1).strip() if extraer_system_red else instrucciones_red
 
     sql_final = generar_sql_y_validar(pregunta, system_gen, system_val)
@@ -593,10 +745,22 @@ def procesar_consulta(pregunta: str):
 
     print(f'Resultado: {resultado["total_filas"]} fila(s) obtenidas.\n')
 
+    # ------------------------------------------------------------------
+    # Generar grafico si tiene sentido
+    # ------------------------------------------------------------------
+    imagenes_chat = []
+    if (es_intencion_grafico(pregunta) or resultado.get('total_filas', 0) >= 3) and resultado.get('columns'):
+        timestamp_graf = datetime.now().strftime('%Y%m%d_%H%M%S')
+        print(f'[{MODELO}] Evaluando grafico para la consulta...')
+        imagenes_chat = generar_graficos_consulta(resultado, pregunta, timestamp_graf)
+
     print(f'[{MODELO}] Redactando respuesta...')
+    prompt_red = json.dumps(resultado, ensure_ascii=False, indent=2)
+    if imagenes_chat:
+        prompt_red += '\n\n### Grafico generado\n' + '\n'.join(imagenes_chat) + '\n\nSi hay un grafico, incluirlo en la respuesta como imagen markdown.'
     respuesta_final = llamar_llm(
         system_red,
-        json.dumps(resultado, ensure_ascii=False, indent=2),
+        prompt_red,
         temperatura=0.3,
     )
 

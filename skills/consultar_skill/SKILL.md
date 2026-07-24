@@ -65,12 +65,20 @@ cur = conn.cursor()
 
 ##  Reglas obligatorias para generar consultas
 
-### 1. Siempre limitar resultados
+### 1. Limitar segun el contexto
 
-Toda consulta `SELECT` debe incluir `LIMIT N` (salvo que el usuario pida explícitamente todos los registros). Por defecto usa `LIMIT 20`.
+Toda consulta `SELECT` debe incluir `LIMIT N` (salvo que sea una agregacion con pocos grupos o que el usuario pida explicitamente todos los registros).
 
-✅ Correcto: `SELECT * FROM ventas LIMIT 10;`
-❌ Incorrecto: `SELECT * FROM ventas;`
+| Contexto | LIMIT sugerido |
+|----------|---------------|
+| Consulta puntual (top 5, un dia, busqueda especifica) | `LIMIT 20` |
+| Periodo completo (un mes, varios meses, tendencias) | `LIMIT 1000` |
+| GROUP BY con muchas categorias (tallas, tiendas, SKUs) | `LIMIT 200` |
+| COUNT(*) o agregaciones con pocos grupos | Sin LIMIT |
+
+✅ Correcto: `SELECT * FROM ventas LIMIT 20;`
+✅ Correcto: `SELECT "DEPARTAMENTO", SUM("CANTIDAD") FROM ventas GROUP BY "DEPARTAMENTO";` (agregacion con pocos grupos)
+❌ Incorrecto: `SELECT * FROM ventas;` (sin LIMIT, devuelve ~265K filas)
 
 ### 2. Columnas con espacios requieren comillas dobles
 
