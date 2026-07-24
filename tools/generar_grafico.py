@@ -29,17 +29,31 @@ TAMANO_DEFECTO  = (8, 4.5)
 TAMANO_TORTA    = (6, 6)
 
 
-def aplicar_estilo_creytex(fig, ax):
+def aplicar_estilo_creytex(fig, ax, formatter=None, horizontal=False):
+    """
+    Aplica el estilo visual corporativo Creytex.
+    - formatter: FuncFormatter ya configurado con el formato_y correcto.
+    - horizontal: True para barras horizontales (los valores estan en el eje X).
+    """
     ax.set_facecolor(COLOR_FONDO)
     fig.patch.set_facecolor('white')
-    ax.grid(True, axis='y', alpha=0.3, linestyle='--', color=COLOR_GRIS)
-    ax.grid(False, axis='x')
+    if horizontal:
+        # Valores en eje X → grilla vertical, formatter en xaxis
+        ax.grid(True, axis='x', alpha=0.3, linestyle='--', color=COLOR_GRIS)
+        ax.grid(False, axis='y')
+        if formatter:
+            ax.xaxis.set_major_formatter(formatter)
+    else:
+        # Valores en eje Y → grilla horizontal, formatter en yaxis
+        ax.grid(True, axis='y', alpha=0.3, linestyle='--', color=COLOR_GRIS)
+        ax.grid(False, axis='x')
+        if formatter:
+            ax.yaxis.set_major_formatter(formatter)
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
     ax.spines['left'].set_color(COLOR_SPINE)
     ax.spines['bottom'].set_color(COLOR_SPINE)
     ax.tick_params(colors=COLOR_TEXTO, labelsize=9)
-    ax.yaxis.set_major_formatter(FuncFormatter(_formatear_y))
 
 
 def _formatear_y(valor, _pos, fmt='moneda'):
@@ -126,7 +140,7 @@ def generar_grafico(
     fmt_y = formato_y
     def formatter(val, _pos):
         return _formatear_y(val, _pos, fmt=fmt_y)
-    ax.yaxis.set_major_formatter(FuncFormatter(formatter))
+    fmt_func = FuncFormatter(formatter)
 
     try:
         if tipo == 'linea':
@@ -134,7 +148,7 @@ def generar_grafico(
             ax.fill_between(range(len(x_vals)), y_vals, alpha=0.08, color=COLOR_PRINCIPAL)
             ax.set_xticks(range(len(x_vals)))
             ax.set_xticklabels(x_vals, rotation=30, ha='right', fontsize=8)
-            aplicar_estilo_creytex(fig, ax)
+            aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
             ax.set_ylabel(etiqueta_y, fontsize=10, color=COLOR_TEXTO, labelpad=8)
@@ -146,9 +160,9 @@ def generar_grafico(
             ax.set_yticks(indices)
             ax.set_yticklabels(x_vals, fontsize=9)
             ax.invert_yaxis()
-            aplicar_estilo_creytex(fig, ax)
+            aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=True)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
-            ax.set_xlabel(etiqueta_y or '', fontsize=10, color=COLOR_TEXTO, labelpad=8)
+            ax.set_xlabel(etiqueta_y or etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
             for i, v in enumerate(y_vals):
                 ax.text(v + abs(max(y_vals)) * 0.01, i, formatter(v, None),
                         va='center', fontsize=8, color=COLOR_TEXTO)
@@ -159,7 +173,7 @@ def generar_grafico(
             ax.bar(indices, y_vals, color=colores, width=0.6, edgecolor='white', linewidth=0.3)
             ax.set_xticks(indices)
             ax.set_xticklabels(x_vals, rotation=30, ha='right', fontsize=8)
-            aplicar_estilo_creytex(fig, ax)
+            aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
             ax.set_ylabel(etiqueta_y, fontsize=10, color=COLOR_TEXTO, labelpad=8)
@@ -169,7 +183,7 @@ def generar_grafico(
                 plt.close(fig)
                 return {'path': None, 'width_px': 0, 'height_px': 0, 'error': 'barras_agrupadas requiere clave "serie" en cada dict de datos.'}
             _graficar_barras_agrupadas(ax, datos, formatter)
-            aplicar_estilo_creytex(fig, ax)
+            aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
             ax.set_ylabel(etiqueta_y, fontsize=10, color=COLOR_TEXTO, labelpad=8)
