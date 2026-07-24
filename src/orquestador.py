@@ -749,7 +749,7 @@ def procesar_consulta(pregunta: str):
     # Generar grafico si tiene sentido
     # ------------------------------------------------------------------
     imagenes_chat = []
-    if (es_intencion_grafico(pregunta) or resultado.get('total_filas', 0) >= 3) and resultado.get('columns'):
+    if es_intencion_grafico(pregunta) and resultado.get('columns'):
         timestamp_graf = datetime.now().strftime('%Y%m%d_%H%M%S')
         print(f'[{MODELO}] Evaluando grafico para la consulta...')
         imagenes_chat = generar_graficos_consulta(resultado, pregunta, timestamp_graf)
