@@ -58,7 +58,7 @@ REGLAS_GEN = """
 1. Siempre usa comillas dobles en TODOS los nombres de columna.
 2. Usa TRIM() en columnas de texto: TRIM("SIGNO"), TRIM("DEPARTAMENTO"), TRIM("DESC_MOVIMIENTO").
 3. "SIGNO" puede ser null, '-' con espacios, o '+' con espacios.
-4. FECHA_MVTO es TEXT DD/MM/AAAA. Usa TO_DATE("FECHA_MVTO", 'DD/MM/YYYY'). NO uses ::DATE.
+4. FECHA_MVTO es TEXT en formato D/M/YYYY sin ceros (ej: 1/7/2026). USA TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY'). NUNCA uses ::DATE ni TO_DATE con 'DD/MM/YYYY'.
 5. Para valor de ventas usa "CANTIDAD" * "PVP". NUNCA uses "PVP LISTA" para tiendas individuales.
 6. "PVP LISTA" SOLO se usa si la consulta es sobre clientes MACRO (cadenas), no tiendas.
 7. Si un alias tiene mayusculas (ej: "Ventas"), ponle comillas dobles en ORDER BY y GROUP BY: ORDER BY "Ventas" DESC.
@@ -71,7 +71,7 @@ REGLAS_VAL = """
 1. Verifica que TODOS los nombres de columna esten entre comillas dobles.
 2. Verifica uso de TRIM() en filtros de texto.
 3. No aceptes LIMIT en COUNT(*) o agregaciones simples.
-4. Rechaza "FECHA_MVTO"::DATE. Debe ser TO_DATE().
+4. Rechaza TO_DATE con formato 'DD/MM/YYYY' o ::DATE. Solo acepta TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY').
 5. Revisa que use "CANTIDAD" * "PVP" para valor de ventas, no "PVP LISTA" (a menos que sea consulta macro).
 6. Revisa que los alias con mayusculas usen comillas dobles en ORDER BY/GROUP BY.
 7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER, RECHAZAR.

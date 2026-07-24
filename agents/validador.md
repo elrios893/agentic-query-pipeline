@@ -36,10 +36,10 @@ Las siguientes columnas son 100% nulas y NO deben aparecer en la consulta:
 - `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU`, `LLAVE_DEP`
 
 #### 4.  Fechas bien casteadas
-Si la consulta filtra por `FECHA_MVTO`, debe usar `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')`. **RECHAZA cualquier uso de `"FECHA_MVTO"::DATE`** porque el formato es DD/MM/AAAA y el casteo directo falla:
-- ❌ `"FECHA_MVTO"::DATE = '2026-01-01'`
-- ❌ `"FECHA_MVTO" = '01-01-2026'`
-- ✅ `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY') = '2026-01-01'`
+Si la consulta filtra por `FECHA_MVTO`, debe usar `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`. El formato real en la tabla es `D/M/YYYY` sin ceros a la izquierda (ej: `1/7/2026`). El modificador `FM` es obligatorio para que PostgreSQL lo parsee correctamente. **RECHAZA cualquier otro casteo**:
+- ❌ `"FECHA_MVTO"::DATE`
+- ❌ `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')` — falla con días/meses de un dígito
+- ✅ `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') = '2026-01-07'`
 
 #### 5.  Comillas dobles en columnas problemáticas
 Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comillas dobles:
@@ -133,7 +133,7 @@ Errores encontrados:
 2. El formato DD/MM/AAAA requiere TO_DATE(), no ::DATE.
 
 Feedback para el generador:
-Usa TO_DATE("FECHA_MVTO", 'DD/MM/YYYY') = '2026-01-01' para filtrar por fecha.
+Usa TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') = '2026-01-01' para filtrar por fecha.
 ```
 
 **Entrada:**

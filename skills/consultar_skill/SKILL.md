@@ -93,23 +93,26 @@ Para contar registros usa `COUNT(*)`. Si necesitas valores únicos usa `COUNT(DI
 ✅ Correcto: `SELECT COUNT(*) FROM ventas;`
 ✅ Correcto: `SELECT COUNT(DISTINCT "DESC_MOVIMIENTO") FROM ventas;`
 
-### 5. Fechas: FECHA_MVTO está como TEXT en DD/MM/AAAA
+### 5. Fechas: FECHA_MVTO está como TEXT en D/M/YYYY sin ceros
 
-La columna `FECHA_MVTO` es de tipo `text` en formato `DD/MM/AAAA`. **NUNCA** uses `::DATE` porque PostgreSQL espera YYYY-MM-DD. Usa `TO_DATE()`:
+La columna `FECHA_MVTO` es de tipo `text` en formato `D/M/YYYY` **sin ceros a la izquierda** (ej: `1/7/2026`, `10/3/2026`). Usa `TO_DATE()` con el modificador `FM` que ignora ceros opcionales:
 
 ```sql
 -- Filtrar por rango de fechas
 SELECT * FROM ventas
-WHERE TO_DATE("FECHA_MVTO", 'DD/MM/YYYY') BETWEEN '2026-01-01' AND '2026-01-15'
+WHERE TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-01-15'
 LIMIT 20;
 
 -- Extraer mes o año
-SELECT EXTRACT(MONTH FROM TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')) AS mes, COUNT(*)
+SELECT EXTRACT(MONTH FROM TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS mes, COUNT(*)
 FROM ventas
 GROUP BY mes;
 ```
 
-⚠️ **CRÍTICO**: `"FECHA_MVTO"::DATE` FALLA porque el texto está en DD/MM/AAAA, no en YYYY-MM-DD.
+⚠️ **CRITICO**: 
+- `"FECHA_MVTO"::DATE` FALLA — el texto está en D/M/YYYY, no en YYYY-MM-DD.
+- `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')` FALLA con fechas de un dígito como `1/7/2026` — produce resultados incorrectos (año 2024 en lugar de 2026).
+- **CORRECTO**: `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`
 
 ### 6. Filtrar por tipo de movimiento
 
@@ -272,8 +275,9 @@ LIMIT 10;
 |-------|-------------|
 | `SELECT * FROM ventas` sin `LIMIT` | Puede devolver 263K filas y colapsar la conexión |
 | Usar `Año` sin comillas | PostgreSQL interpretará `A` como alias y `ño` como error de sintaxis |
-| `FECHA_MVTO = '2026-01-01'` sin castear | Falla porque es TEXT, no DATE. Usa `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY') = '2026-01-01'` |
-| `"FECHA_MVTO"::DATE` | FALLA — el formato es DD/MM/AAAA, no YYYY-MM-DD. Usa `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')` |
+| `FECHA_MVTO = '2026-01-01'` sin castear | Falla porque es TEXT, no DATE. Usa `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') = '2026-01-01'` |
+| `"FECHA_MVTO"::DATE` | FALLA — el formato es D/M/YYYY sin ceros. Usa `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')` |
+| `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')` | FALLA con fechas de un digito (1/7/2026 → año 2024 erroneo). Siempre usar `FMDD/FMMM/YYYY` |
 | `ORDER BY Ventas DESC` (alias con mayuscula sin comillas) | PostgreSQL dobla `ventas` a minusculas y no encuentra el alias. Usa `ORDER BY "Ventas" DESC` |
 | `GROUP BY 1` con columnas con espacios | Falla porque los alias con espacios no se resuelven. Usa nombres completos |
 | Olvidar el `;` al final | PostgreSQL no ejecutará la consulta |
