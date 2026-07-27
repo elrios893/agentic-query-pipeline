@@ -625,7 +625,8 @@ Responde con un JSON con esta estructura exacta:
     print(f'Consultas a ejecutar: {len(plan["consultas"])}')
 
     # ------------------------------------------------------------------
-    # FASE 2: validar y ejecutar cada consulta del plan
+    # FASE 2: ejecutar cada consulta del plan (sin validador — el LLM
+    # genera SQL correcta y PostgreSQL reporta errores reales si los hay)
     # ------------------------------------------------------------------
     resultados = {}
     for item in plan['consultas']:
@@ -634,35 +635,31 @@ Responde con un JSON con esta estructura exacta:
         if not sql_raw:
             continue
 
-        print(f'\n  Validando: {nombre}...')
-        sql_validado = sql_raw
-        for intento in range(MAX_ITERACIONES):
-            validacion = llamar_llm(system_val, sql_validado, temperatura=0.0)
-            if 'VALIDA' in validacion.upper():
-                print(f'  Validacion APROBADA.')
-                break
-            else:
-                print(f'  Validacion RECHAZADA (intento {intento + 1}). Corrigiendo...')
-                if intento < MAX_ITERACIONES - 1:
-                    correccion = llamar_llm(
-                        system_gen,
-                        f"La consulta fue rechazada:\n{validacion}\n\nCorrige la SQL:\n{sql_validado}",
-                        temperatura=0.2,
-                    )
-                    sql_validado = extraer_sql(correccion)
-                else:
-                    print(f'  Se agotaron los intentos para: {nombre}')
-                    sql_validado = None
-                    break
+        sql_limpia = extraer_sql(sql_raw) if '```' in sql_raw else sql_raw
+        if not sql_limpia.rstrip().endswith(';'):
+            sql_limpia += ';'
 
-        if sql_validado:
-            print(f'  Ejecutando: {nombre}...')
-            resultado = ejecutar_consulta(sql_validado, limite=500)
-            if resultado.get('success'):
-                resultados[nombre] = resultado
-                print(f'  OK: {resultado["total_filas"]} fila(s)')
+        print(f'  Ejecutando: {nombre}...')
+        resultado = ejecutar_consulta(sql_limpia, limite=500)
+        if resultado.get('success'):
+            resultados[nombre] = resultado
+            print(f'  OK: {resultado["total_filas"]} fila(s)')
+        else:
+            # Un error real de PostgreSQL — intentar corregir UNA vez con el LLM
+            error_pg = resultado.get('error', '')
+            print(f'  Error PostgreSQL: {error_pg}. Intentando correccion...')
+            correccion = llamar_llm(
+                (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + reglas_extra_gen,
+                f'La siguiente SQL produjo un error en PostgreSQL:\n\nSQL:\n{sql_limpia}\n\nError:\n{error_pg}\n\nCorrige la SQL para la consulta "{nombre}". Responde solo con el SQL corregido.',
+                temperatura=0.1,
+            )
+            sql_corregida = extraer_sql(correccion)
+            resultado2 = ejecutar_consulta(sql_corregida, limite=500)
+            if resultado2.get('success'):
+                resultados[nombre] = resultado2
+                print(f'  OK (corregida): {resultado2["total_filas"]} fila(s)')
             else:
-                print(f'  Error: {resultado.get("error")}')
+                print(f'  Omitiendo {nombre}: {resultado2.get("error")}')
 
     if not resultados:
         print('No se obtuvieron datos. Abortando informe.')
