@@ -44,6 +44,23 @@ def aplicar_estilo_tabla(table):
                         run.font.size = Pt(9)
 
 
+def _agregar_parrafo_con_formato(doc, text, style=None):
+    """Agrega un párrafo respetando **bold** e _italic_ inline."""
+    p = doc.add_paragraph(style=style) if style else doc.add_paragraph()
+    patron = re.compile(r'(\*\*.*?\*\*|_.*?_)')
+    partes = patron.split(text.replace('⚠️', ''))
+    for parte in partes:
+        if parte.startswith('**') and parte.endswith('**'):
+            run = p.add_run(parte[2:-2])
+            run.bold = True
+        elif parte.startswith('_') and parte.endswith('_') and len(parte) > 2:
+            run = p.add_run(parte[1:-1])
+            run.italic = True
+        else:
+            p.add_run(parte)
+    return p
+
+
 def markdown_a_docx(md_text: str) -> Document:
     doc = Document()
 
@@ -127,17 +144,13 @@ def markdown_a_docx(md_text: str) -> Document:
 
         if re.match(r'^-\s', text):
             text_clean = re.sub(r'^-\s+', '', text)
-            text_clean = re.sub(r'\*\*(.*?)\*\*', r'\1', text_clean)
-            p = doc.add_paragraph(text_clean, style='List Bullet')
-            for run in p.runs:
-                if '**' in line:
-                    run.font.bold = True
+            _agregar_parrafo_con_formato(doc, text_clean, style='List Bullet')
             i += 1
             continue
 
         if re.match(r'^\d+\.\s', text):
             text_clean = re.sub(r'^\d+\.\s+', '', text)
-            p = doc.add_paragraph(text_clean, style='List Number')
+            _agregar_parrafo_con_formato(doc, text_clean, style='List Number')
             i += 1
             continue
 
@@ -147,10 +160,8 @@ def markdown_a_docx(md_text: str) -> Document:
             continue
 
         if re.match(r'^\*\*', text):
-            text_clean = text.replace('**', '').replace('⚠️', '')
-            p = doc.add_paragraph()
-            run = p.add_run(text_clean)
-            run.bold = True
+            # Linea que empieza con bold — puede tener mezcla inline
+            _agregar_parrafo_con_formato(doc, text)
             i += 1
             continue
 
@@ -175,9 +186,7 @@ def markdown_a_docx(md_text: str) -> Document:
             i += 1
             continue
 
-        text_clean = re.sub(r'\*\*(.*?)\*\*', r'\1', text)
-        text_clean = text_clean.replace('⚠️', '')
-        p = doc.add_paragraph(text_clean)
+        _agregar_parrafo_con_formato(doc, text)
         i += 1
 
     if in_table and table_data:

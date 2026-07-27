@@ -176,26 +176,40 @@ def limpiar_texto(texto: str) -> str:
     return ''.join(c for c in texto if unicodedata.category(c) != 'So').strip()
 
 def llamar_llm(system_prompt: str, user_prompt: str, temperatura: float = 0.1) -> str:
-    if PROVIDER == 'gemini':
-        response = _client.models.generate_content(
-            model=MODELO,
-            contents=user_prompt,
-            config={
-                'system_instruction': system_prompt,
-                'temperature': temperatura,
-            },
-        )
-        return limpiar_texto(response.text.strip())
-    else:
-        respuesta = _client.chat.completions.create(
-            model=MODELO,
-            messages=[
-                {'role': 'system', 'content': system_prompt},
-                {'role': 'user', 'content': user_prompt},
-            ],
-            temperature=temperatura,
-        )
-        return limpiar_texto(respuesta.choices[0].message.content.strip())
+    import time
+    max_reintentos = 4
+    espera = 10  # segundos base entre reintentos
+    for intento in range(max_reintentos):
+        try:
+            if PROVIDER == 'gemini':
+                response = _client.models.generate_content(
+                    model=MODELO,
+                    contents=user_prompt,
+                    config={
+                        'system_instruction': system_prompt,
+                        'temperature': temperatura,
+                    },
+                )
+                return limpiar_texto(response.text.strip())
+            else:
+                respuesta = _client.chat.completions.create(
+                    model=MODELO,
+                    messages=[
+                        {'role': 'system', 'content': system_prompt},
+                        {'role': 'user', 'content': user_prompt},
+                    ],
+                    temperature=temperatura,
+                )
+                return limpiar_texto(respuesta.choices[0].message.content.strip())
+        except Exception as e:
+            msg = str(e).lower()
+            es_rate_limit = any(x in msg for x in ('rate limit', '429', 'too many', 'timeout', 'timed out', 'connection'))
+            if es_rate_limit and intento < max_reintentos - 1:
+                pausa = espera * (2 ** intento)  # backoff exponencial: 10s, 20s, 40s
+                print(f'  [LLM] Rate limit / timeout (intento {intento+1}). Reintentando en {pausa}s...')
+                time.sleep(pausa)
+            else:
+                raise
 
 def extraer_sql(texto: str) -> str:
     bloques = re.findall(r'```sql\s*(.*?)\s*```', texto, re.DOTALL | re.IGNORECASE)

@@ -80,15 +80,20 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - Si el alias es todo minúsculas sin caracteres especiales, no necesita comillas: `ORDER BY ventas DESC`.
 - **NO inventar errores**: si el alias YA tiene comillas dobles en ORDER BY / GROUP BY, no es un error.
 
-#### 10.  Textos normalizados (solo advertencia, no rechazo)
-- `UPPER(TRIM())` en columnas de texto es una buena práctica pero **NO es motivo de rechazo**.
-- Solo rechaza si hay un error real (columna inexistente, tipo incorrecto, etc.).
-- **NO rechazar** una consulta únicamente porque le falta `UPPER()`.
+#### 10.  UPPER/TRIM en SELECT — NO verificar, NO rechazar
+- **Esta regla NO existe como criterio de rechazo.**
+- `UPPER(TRIM())` es opcional. Una consulta con `TRIM("REFERENCIA")` o simplemente `"REFERENCIA"` en el SELECT es perfectamente válida.
+- ✅ `SELECT TRIM("REFERENCIA") AS "REFERENCIA" ...` → CORRECTO
+- ✅ `SELECT "REFERENCIA" ...` → CORRECTO
+- ✅ `SELECT UPPER(TRIM("REFERENCIA")) ...` → también CORRECTO
+- **NUNCA rechazar** por ausencia de `UPPER()` en el SELECT. Es una optimización opcional, no un requisito.
 
 #### 11.  Sin errores de sintaxis obvios
 - `GROUP BY` debe incluir todas las columnas no agregadas del `SELECT`. **PostgreSQL permite usar alias del SELECT en GROUP BY** — esto es válido y no debe rechazarse.
-- ✅ `SELECT TO_DATE(...) AS "Fecha" ... GROUP BY "Fecha"` → CORRECTO en PostgreSQL
-- ✅ `SELECT TO_DATE(...) AS "Fecha" ... GROUP BY TO_DATE(...)` → también CORRECTO
+- ✅ `SELECT TO_DATE(...) AS "Fecha" ... GROUP BY "Fecha"` → CORRECTO
+- ✅ `SELECT TO_DATE(...) AS "Fecha" ... GROUP BY TO_DATE(...)` → CORRECTO
+- ✅ `SELECT TRIM("REFERENCIA") AS "REFERENCIA" ... GROUP BY TRIM("REFERENCIA")` → CORRECTO (expresion identica)
+- ✅ `SELECT "REFERENCIA" ... GROUP BY TRIM("REFERENCIA")` → CORRECTO (TRIM no cambia el valor agrupado)
 - Las comillas simples y dobles deben estar balanceadas.
 - El `;` final se agrega automaticamente, no es necesario verificarlo.
 
