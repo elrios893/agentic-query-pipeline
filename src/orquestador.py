@@ -13,6 +13,12 @@ from pathlib import Path
 from datetime import datetime
 from dotenv import load_dotenv
 
+# Forzar stdout/stderr en UTF-8 independientemente del locale de Windows
+if sys.stdout.encoding and sys.stdout.encoding.lower() != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
+
 load_dotenv()
 
 # ---------------------------------------------------------------------------
@@ -98,8 +104,8 @@ PATRONES_INFORME = re.compile(
 )
 
 PATRONES_GRAFICO = re.compile(
-    r'\b(grafic|grafico|grafica|chart|plotea|visualiza|'
-    r'barras|torta|linea|tendencia|distribucion)\b',
+    r'(grafic\w*|grafica\w*|chart|plotea\w*|visualiza\w*|'
+    r'\bbarras\b|\btorta\b|\blinea\b|\btendencia\b|\bdistribucion\b)',
     re.IGNORECASE
 )
 
