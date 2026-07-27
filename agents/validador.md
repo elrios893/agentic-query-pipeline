@@ -64,27 +64,31 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - Si pregunta por "ventas", el filtro debe incluir `"DESC_MOVIMIENTO" = 'VENTAS POS'`.
 - Si pregunta por "devoluciones", el filtro debe incluir `"DESC_MOVIMIENTO" = 'CAMBIOS DE MERCANCIA ACLIENTE'`.
 - `DESC_MOVIMIENTO` solo acepta 3 valores: `'VENTAS POS'`, `'CAMBIOS DE MERCANCIA ACLIENTE'`, `'DEVOLUCIÓN AL PROVEEDOR'`. Cualquier otro valor literal en un filtro `WHERE "DESC_MOVIMIENTO" = '...'` → **RECHAZAR**.
-- Si suma `CANTIDAD` en ventas, el signo implícito es negativo (sale de inventario). Para reportes de "unidades vendidas" no es necesario multiplicar por -1, pero tenlo en cuenta.
+- **El filtro por `SIGNO` NO es obligatorio.** Aunque el campo existe (`-` = salida, `+` = entrada), filtrar por él es unicamente necesario si el usuario lo pide. Una consulta sin `WHERE SIGNO = '-'` es válida.
+- Si suma `CANTIDAD`, tener en cuenta que las ventas salen como negativo en `SIGNO`, pero no es necesario filtrar por signo si el contexto de `DESC_MOVIMIENTO` ya lo delimita.
 
 #### 8.  Columnas de precio correctas
 - Para valor de ventas de tiendas, debe usar `"CANTIDAD" * "PVP"`. Si usa `"PVP LISTA"` para tiendas individuales → **RECHAZAR** (PVP_LISTA es solo para cadenas/macro).
 - `"PVP LISTA"` solo es válido si la pregunta es sobre clientes MACRO (cadenas, no tiendas individuales).
 
 #### 9.  Alias con mayusculas en ORDER BY / GROUP BY
-- Si el `SELECT` usa un alias con mayusculas (ej: `AS "Ventas"`, `AS "Total_Unidades"`) y ese alias aparece en `ORDER BY` o `GROUP BY`, debe ir con comillas dobles: `ORDER BY "Ventas" DESC`.
-- Sin comillas, PostgreSQL dobla el alias a minusculas y **falla** porque no encuentra `ventas`.
-- ❌ `ORDER BY Ventas DESC`
-- ✅ `ORDER BY "Ventas" DESC`
-- Si el alias es completamente en minusculas, no necesita comillas: `ORDER BY ventas DESC` (funciona).
+- Si el `SELECT` define un alias con mayusculas/mixto (ej: `AS "Ventas"`, `AS "Ventas_Totales"`) y ese alias aparece en `ORDER BY` o `GROUP BY` **ya entre comillas dobles** → está **correcto, no rechazar**.
+- Solo rechaza si el alias aparece **sin comillas**: `ORDER BY Ventas DESC` (PostgreSQL lo convierte a minúsculas y no lo encuentra).
+- ❌ `ORDER BY Ventas DESC`  ← sin comillas, alias mixto → RECHAZAR
+- ✅ `ORDER BY "Ventas" DESC`  ← con comillas dobles → CORRECTO
+- ✅ `ORDER BY "Ventas_Totales" DESC`  ← con comillas dobles → CORRECTO
+- Si el alias es todo minúsculas sin caracteres especiales, no necesita comillas: `ORDER BY ventas DESC`.
+- **NO inventar errores**: si el alias YA tiene comillas dobles en ORDER BY / GROUP BY, no es un error.
 
-#### 10.  Textos normalizados a mayusculas
-- Verifica que `DEPARTAMENTO`, `CIUDAD`, `DESC_DEPENDENCIA`, `RAZON_SOCIAL`, `CLIMA`, `ZONA`, `ZONA_EX`, `DESC_ITEM` usen `UPPER(TRIM(...))` en el SELECT. Sin `UPPER`, los datos pueden tener casing inconsistente.
-- ❌ `TRIM("DEPARTAMENTO") AS "Departamento"`
-- ✅ `UPPER(TRIM("DEPARTAMENTO")) AS "DEPARTAMENTO"`
-- Si alguna de estas columnas aparece sin `UPPER()` → **RECHAZAR** con sugerencia de agregarlo.
+#### 10.  Textos normalizados (solo advertencia, no rechazo)
+- `UPPER(TRIM())` en columnas de texto es una buena práctica pero **NO es motivo de rechazo**.
+- Solo rechaza si hay un error real (columna inexistente, tipo incorrecto, etc.).
+- **NO rechazar** una consulta únicamente porque le falta `UPPER()`.
 
 #### 11.  Sin errores de sintaxis obvios
-- `GROUP BY` debe incluir todas las columnas no agregadas del `SELECT`.
+- `GROUP BY` debe incluir todas las columnas no agregadas del `SELECT`. **PostgreSQL permite usar alias del SELECT en GROUP BY** — esto es válido y no debe rechazarse.
+- ✅ `SELECT TO_DATE(...) AS "Fecha" ... GROUP BY "Fecha"` → CORRECTO en PostgreSQL
+- ✅ `SELECT TO_DATE(...) AS "Fecha" ... GROUP BY TO_DATE(...)` → también CORRECTO
 - Las comillas simples y dobles deben estar balanceadas.
 - El `;` final se agrega automaticamente, no es necesario verificarlo.
 
