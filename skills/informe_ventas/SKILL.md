@@ -35,283 +35,359 @@ metadata:
 
 ## Filosofia de uso
 
-Esta skill NO es una plantilla fija. Es una **caja de herramientas**: un conjunto de bloques
-disponibles que el agente selecciona, combina y ordena segun lo que el usuario pidio.
+Esta skill NO es una plantilla fija. Es una **caja de herramientas**: bloques disponibles
+que el agente selecciona, combina y ordena segun lo que el usuario pidio.
 
 **Regla principal:** leer la intencion del usuario primero. Luego elegir solo los bloques
-que respondan a esa intencion. Un informe puede tener 2 bloques o 8 — lo que el contexto
+que respondan a esa intencion. Un informe puede tener 2 bloques o 9 — lo que el contexto
 requiera, ni mas ni menos.
+
+El orden de los bloques sigue el principio **macro → micro**: primero lo mas agregado
+(resumen, geografico), luego lo mas granular (tienda, producto, talla).
 
 ---
 
-## Reglas de negocio (siempre aplican, en cualquier bloque)
+## Reglas de negocio (siempre aplican)
 
-1. Fuente de ventas: `TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'` y `TRIM("SIGNO") = '-'`.
+1. Fuente de ventas: `TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'`. El campo `SIGNO` NO es obligatorio filtrar.
 2. DESC_MOVIMIENTO solo tiene 3 valores válidos: `'VENTAS POS'`, `'CAMBIOS DE MERCANCIA ACLIENTE'`, `'DEVOLUCIÓN AL PROVEEDOR'`.
 3. Valor de venta: `"CANTIDAD" * "PVP"`. Nunca `"PVP LISTA"` para tiendas individuales.
-4. `"PVP LISTA"` solo cuando la pregunta sea sobre macroclientes/cadenas (ej: Exito como cadena).
-5. Fechas: `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`. Nunca `::DATE` ni `TO_DATE` con `'DD/MM/YYYY'` — el formato real es `D/M/YYYY` sin ceros.
-6. Texto con espacios: siempre `TRIM()` en `"SIGNO"`, `"DESC_MOVIMIENTO"`, `"DEPARTAMENTO"`, etc.
-7. **Jerarquía de producto**: `LINEA` → `LINEA_DETLL` (performance/exterior/junior) → `ESTILO_ITEM` (camisa, falda, pantaloneta) → `GRUPO` (manga corta/larga). Usar el nivel que corresponda segun la granularidad que pida el usuario.
+4. `"PVP LISTA"` solo cuando la pregunta sea sobre macroclientes/cadenas.
+5. Fechas: `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`. Nunca `::DATE` ni `'DD/MM/YYYY'` sin FM.
+6. Siempre `TRIM()` en `"SIGNO"`, `"DESC_MOVIMIENTO"`, `"DEPARTAMENTO"`, etc.
+7. **Jerarquía de producto**: `LINEA` → `LINEA_DETLL` → `ESTILO_ITEM` → `GRUPO`. Usar el nivel que corresponda.
 8. No usar: `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU`, `LLAVE_DEP`.
 9. Nunca inventar cifras. Si no hay dato: escribir "Sin informacion".
 
 ---
 
-## Como elegir bloques
+## REGLAS DE FORMATO MARKDOWN — OBLIGATORIAS
 
-Antes de construir el informe, identificar:
+**CRITICO:** El documento final se convierte a Word (.docx). El parser espera Markdown estandar.
+Seguir estas reglas sin excepcion, independientemente del modelo LLM que este generando:
 
-- **Que quiere ver el usuario** — ventas globales, por zona, por producto, por tienda, alertas, etc.
-- **Con que granularidad** — total, por mes, por semana, por departamento, por talla.
-- **Para quien es** — gerencia (resumen ejecutivo + alertas), operaciones (detalle de tiendas), producto (Referencias y tallas).
+### Titulos (OBLIGATORIO)
+- El titulo principal del documento: `# Titulo` — UN solo numeral, sin espacios extra.
+- Secciones de primer nivel: `## Nombre de seccion` — DOS numerales.
+- Subsecciones: `### Nombre` — TRES numerales.
+- **PROHIBIDO** usar cuatro o mas numerales (`####`, `#####`).
+- **PROHIBIDO** escribir el titulo de seccion como texto plano o con negrita en lugar de `##`.
 
-Luego seleccionar de la lista de bloques disponibles. No es necesario usar todos.
-
----
-
-## Bloques disponibles
-
-Cada bloque describe: que muestra, que datos necesita y como formatearlo.
-
----
-
-### BLOQUE A — Encabezado del documento
-
-**Cuando usar:** siempre, es la portada de cualquier informe.
-
-**Contenido:**
+Ejemplos correctos:
 ```
-# [Titulo del informe segun lo que pidio el usuario]
-**Periodo:** [rango de fechas o descripcion del periodo]
-**Generado:** [fecha de hoy]
-Creytex
+# Informe de Ventas — Mayo 2026
+## 1. Resumen Ejecutivo
+## 2. Geografico
+### 2.1 Participacion por Departamento
+## 3. Dependencias
 ```
 
-El titulo debe reflejar exactamente lo que el usuario pidio, no un titulo generico.
-Ejemplos:
-- "Informe de Ventas por Departamento — Enero 2026"
-- "Reporte de Tallas mas Vendidas — Q1 2026"
-- "Resumen Ejecutivo de Ventas — Semana 3"
+Ejemplos INCORRECTOS (no usar):
+```
+### Resumen Ejecutivo       ← mal: tres numerales para seccion principal
+**Resumen Ejecutivo**       ← mal: negrita en lugar de titulo
+#### Departamentos          ← mal: cuatro numerales
+Resumen Ejecutivo           ← mal: texto plano
+```
 
----
+### Tablas
+- Siempre con encabezado y separador `|---|`.
+- Alinear columnas de numeros a la derecha: `| ---: |`.
 
-### BLOQUE B — Resumen ejecutivo
-
-**Cuando usar:** cuando el usuario pide un resumen, informe general, o documento para gerencia.
-No usar si el usuario pidio algo muy especifico (ej: "tabla de tallas vendidas").
-
-**Contenido:** 4 a 6 bullets con los hallazgos mas importantes del periodo.
-Cada bullet debe ser una conclusion, no un dato crudo.
-
-Estructura sugerida de bullets:
-- Volumen total: unidades vendidas + valor COP.
-- Elemento destacado positivo (zona, talla, tienda con mejor desempeno).
-- Elemento que requiere atencion (caida, inactividad, baja rotacion).
-- Comparacion con periodo anterior si el dato esta disponible.
-- Dato relevante segun el contexto (tasa de cambios, SKU nuevo, etc.).
-
-**Datos necesarios:** resultado de consultas de totales y comparativos.
-
----
-
-### BLOQUE C — Metricas principales
-
-**Cuando usar:** cuando se necesita mostrar KPIs del periodo de forma tabular.
-Util en informes generales y ejecutivos.
-
-**Formato:** tabla con las metricas mas relevantes segun lo pedido.
-
-| Metrica | Valor | Contexto adicional |
-|---------|-------|--------------------|
-| [nombre] | [cifra formateada] | [unidad, comparacion o nota] |
-
-Metricas posibles (usar solo las relevantes):
-- Unidades vendidas totales
-- Valor total de ventas (COP)
-- Numero de tiendas con venta en el periodo
-- Ticket promedio por transaccion
-- Talla / grupo / zona mas vendida
-- Tasa de cambios/devoluciones (%)
-
-**Datos necesarios:** consultas de agregacion sobre `ventas`.
-
----
-
-### BLOQUE D — Desglose geografico
-
-**Cuando usar:** cuando el usuario pide analisis por zona, departamento, ciudad o region.
-
-**Formato:** tabla ordenada de mayor a menor por la metrica principal.
-
-| Departamento / Ciudad | Unidades | Valor COP | % del total |
-|-----------------------|----------|-----------|-------------|
-
-Agregar al final:
-- Top 3 zonas con mejor desempeno.
-- Zonas con caida significativa (si hay comparativo disponible).
-
-**Datos necesarios:** `GROUP BY TRIM("DEPARTAMENTO")` o `TRIM("CIUDAD")`.
-
----
-
-### BLOQUE E — Desglose por tienda
-
-**Cuando usar:** cuando el usuario pide ver resultados por punto de venta, tienda o dependencia.
-
-**Formato:** tabla ordenada por valor o unidades.
-
-| Tienda (DESC_DEPENDENCIA) | Ciudad | Unidades | Valor COP |
-|---------------------------|--------|----------|-----------|
-
-Agregar nota si alguna tienda aparece inactiva (`ESTADO_TIENDA`) o con `ESTADO_LINEA` inactivo
-para alguna referencia.
-
-**Datos necesarios:** `GROUP BY TRIM("DESC_DEPENDENCIA")`.
-
----
-
-### BLOQUE F — Desglose por producto
-
-**Cuando usar:** cuando el usuario pide analisis por talla, color, referencia, grupo o SKU.
-
-**Formato segun granularidad pedida:**
-
-Por talla:
-| Talla | Unidades | % del total | Valor COP |
-|-------|----------|-------------|-----------|
-
-Por grupo/referencia:
-| Grupo | Referencia | Unidades | Valor COP |
-|-------|-----------|----------|-----------|
-
-Por SKU (Referencia + talla + color):
-| PLU | Descripcion | Talla | Color | Unidades |
-|-----|-------------|-------|-------|----------|
-
-Identificar siempre:
-- El Referencia / talla / grupo de mayor rotacion.
-- El de menor rotacion si el contexto lo requiere.
-
-**Datos necesarios:** `GROUP BY "TALLA"`, `"GRUPO"`, `"PLU"`, `"COLOR"` segun lo pedido.
-
----
-
-### BLOQUE G — Evolucion en el tiempo
-
-**Cuando usar:** cuando el usuario pide tendencia, evolucion, comparacion por semana/mes/dia,
-o quiere ver si las ventas subieron o bajaron.
-
-**Formato:** tabla cronologica o descripcion de tendencia.
-
-| Fecha / Semana / Mes | Unidades | Valor COP | Variacion vs anterior |
-|----------------------|----------|-----------|----------------------|
-
-Si hay pocos puntos, puede ser una lista en lugar de tabla.
-
-**Datos necesarios:** `GROUP BY TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')` o por `"Mes"`, `"Año"`.
-
----
-
-### BLOQUE H — Estado de tiendas / portafolio
-
-**Cuando usar:** cuando el usuario pide saber cuantas tiendas estan activas, cuales se
-desactivaron, o el estado del portafolio de prendas.
-
-**Contenido:**
-- Tiendas activas con venta en el periodo.
-- Tiendas sin venta (posiblemente inactivas).
-- Referencias con `ESTADO_SKU_MOD = 'Inactivo'` o `ESTADO_LINEA` inactivo.
-- Cambios de portafolio (`FCH_ACT_PORTAFOLIO` no nulo = paso de moda a linea).
-
-**Datos necesarios:** consultas sobre `ESTADO_TIENDA`, `ESTADO_LINEA`, `ESTADO_SKU_MOD`.
-
----
-
-### BLOQUE I — Alertas y hallazgos
-
-**Cuando usar:** cuando el informe es para toma de decisiones o el usuario pide destacar
-problemas, riesgos o anomalias. Tambien util al final de cualquier informe ejecutivo.
-
-**Formato:** lista numerada. Solo incluir alertas que tengan datos que las respalden.
-
-Tipos de alerta posibles:
-1. Zona o tienda con caida > 15% vs periodo anterior.
-2. Referencia con rotacion muy baja (menos del 50% del promedio de su grupo).
-3. Tiendas inactivas que tenian venta en el periodo previo.
-4. Talla con sobrestock implicito (baja rotacion + alta disponibilidad historica).
-5. Cualquier anomalia que el analisis de los datos revele.
-
-Si no hay alertas con datos que las respalden: escribir "No se detectaron alertas en el periodo."
-
-**Importante:** no inventar alertas. Solo las que los datos confirmen.
-
----
-
-### BLOQUE J — Anexo de datos completos
-
-**Cuando usar:** cuando el informe necesita respaldo detallado, o el usuario pide ver
-el listado completo (todas las tiendas, todos los SKUs, etc.).
-
-**Formato:** tabla completa sin limitar filas, al final del documento.
-
-Indicar la fuente: "Datos extraidos de tabla `ventas` — CreytexToSQL."
-
----
-
-## Formato de numeros (aplica a todos los bloques)
-
+### Numeros
 | Tipo | Formato | Ejemplo |
 |------|---------|---------|
 | Unidades | Entero con separador de miles | 8,420 |
 | Valor COP | $ + separador de miles | $126,300,000 |
 | Variacion | Signo + o - con 1 decimal | +10.1% / -22.0% |
-| Porcentaje de composicion | 1 decimal + % | 42.0% |
+| Porcentaje | 1 decimal + % | 42.0% |
 | Fechas | DD/MM/YYYY | 15/01/2026 |
 
 ---
 
-## Graficos de apoyo (skill `graficos_ventas`)
+## Orden de bloques (macro → micro)
 
-Para los bloques **D**, **F** y **G**, el pipeline genera automaticamente graficos
-a partir de los datos obtenidos usando la skill `graficos_ventas`. No es necesario
-que el agente los solicite explicitamente.
+Usar solo los bloques relevantes para la intencion del usuario.
+El orden sugerido es orientativo — no es obligatorio incluir todos:
 
-### Reglas de insercion
-
-1. El grafico se genera **antes** de redactar el informe, usando los mismos datos.
-2. El agente redactor debe insertar la imagen markdown **tal como viene en los datos**
-   `![Titulo](ruta/real/del/archivo.png)` — la ruta exacta la proporciona el pipeline en la
-   seccion "Graficos generados" del prompt. No inventar ni modificar la ruta.
-3. El `timestamp` del grafico es el mismo del informe para que compartan sufijo.
-4. Si la generacion del grafico falla, el agente debe continuar el informe sin la
-   imagen y mencionarlo: "No fue posible generar el grafico para este bloque."
-
-### Ubicacion sugerida por bloque
-
-| Bloque | Contenido del bloque | Grafico sugerido | Donde insertarlo |
-|--------|---------------------|------------------|------------------|
-| D | Desglose geografico | `barras_horizontales` con top departamentos | Despues de la tabla de top departamentos |
-| F | Desglose por producto | `barras_verticales` con distribucion de tallas o grupo | Despues de la tabla de producto |
-| G | Evolucion temporal | `linea` con tendencia diaria/semanal/mensual | Despues de la tabla de evolucion |
-| B | Resumen ejecutivo | `barras_horizontales` (si hay datos comparativos) | Al final del bloque, antes del siguiente |
-| E | Desglose por tienda | `barras_horizontales` con top tiendas | Despues de la tabla de tiendas |
-
-### Cuando NO forzar grafico
-
-- Bloque A (portada): nunca lleva grafico.
-- Bloque C (metricas): son numeros individuales, no graficar.
-- Bloque H (estado): datos binarios/estados, no graficar.
-- Bloque I (alertas): las alertas son texto, no graficar.
-- Bloque J (anexo): datos completos, no graficar.
+```
+A  → Encabezado / portada          (siempre)
+B  → Resumen ejecutivo             (informes generales / gerencia)
+C  → Metricas principales          (junto con B; incluir LINEA y REFERENCIA top aqui)
+D  → Geografico: Departamento/Zona (cuando aplique)
+E  → Dependencias (cadenas)        (cuando aplique)
+F  → Tiendas                       (cuando aplique)
+G  → Linea de producto             (cuando aplique)
+H  → Producto (DESC_ITEM)          (cuando aplique)
+I  → Referencia                    (cuando aplique)
+J  → Talla                         (cuando aplique)
+K  → Evolucion en el tiempo        (cuando aplique)
+L  → Estado de tiendas/portafolio  (cuando aplique)
+M  → Alertas y hallazgos           (al final, informes ejecutivos)
+N  → Anexo de datos completos      (cuando el usuario pide detalle completo)
+```
 
 ---
 
-## Conversion a DOCX
+## Bloques disponibles
 
-- Entregar el Markdown completo a la herramienta `generar_docx`.
-- El archivo se guarda en `reports/` con nombre descriptivo: `Informe_[tema]_[periodo].docx`.
-- Las tablas deben tener encabezados. Las alertas en **negrita**.
+---
+
+### BLOQUE A — Encabezado del documento
+
+**Cuando usar:** siempre.
+
+```
+# [Titulo descriptivo segun lo que pidio el usuario]
+**Periodo:** [rango de fechas]
+**Generado:** [fecha de hoy]
+Creytex
+```
+
+---
+
+### BLOQUE B — Resumen ejecutivo
+
+**Cuando usar:** informes generales o para gerencia.
+
+**Contenido:** 4 a 6 bullets con los hallazgos mas importantes.
+Cada bullet debe ser una conclusion, no un dato crudo.
+
+- Volumen total: unidades vendidas + valor COP.
+- Elemento destacado positivo (zona, tienda, referencia con mejor desempeno).
+- Elemento que requiere atencion (caida, inactividad, baja rotacion).
+- Dato relevante adicional segun contexto.
+
+---
+
+### BLOQUE C — Metricas principales
+
+**Cuando usar:** junto con el resumen ejecutivo en informes generales.
+
+**Formato:** tabla de KPIs. Incluir aqui tambien la linea top y la referencia top del periodo.
+
+| Metrica | Valor | Nota |
+|---------|-------|------|
+| Unidades vendidas totales | 8,420 | |
+| Valor total de ventas | $126,300,000 | |
+| Tiendas con venta en el periodo | 45 | |
+| Ticket promedio por transaccion | $15,000 | |
+| Linea mas vendida | [LINEA] | [unidades o valor] |
+| Referencia top | [REFERENCIA] | [unidades o valor] |
+| Talla mas vendida | [TALLA] | [unidades] |
+
+**Datos necesarios:** consultas de agregacion totales + top por LINEA, REFERENCIA, TALLA.
+
+---
+
+### BLOQUE D — Geografico: Departamento / Zona
+
+**Cuando usar:** analisis por zona, departamento, ciudad o region.
+
+**Subsecciones sugeridas:**
+
+#### D.1 Ventas por departamento
+Tabla ordenada mayor a menor:
+
+| Departamento | Unidades | Valor COP | % del total |
+|---|---:|---:|---:|
+
+Insertar grafico `barras_horizontales` despues de la tabla.
+
+#### D.2 Participacion por departamento
+Insertar grafico de `torta` (solo si hay 5 o menos departamentos con participacion relevante;
+si son mas, usar barras horizontales con % del total en la tabla).
+
+#### D.3 Desglose por zona (ZONA)
+Solo si el usuario pide analisis por zona o si el informe es detallado.
+
+| Zona | Unidades | Valor COP |
+|---|---:|---:|
+
+**Datos necesarios:** `GROUP BY UPPER(TRIM("DEPARTAMENTO"))`, `UPPER(TRIM("ZONA"))`.
+
+---
+
+### BLOQUE E — Dependencias (cadenas)
+
+**Cuando usar:** cuando el informe incluye analisis de cadenas/macro-clientes.
+
+**Formato:** dos tablas lado a lado en el documento — top 5 mejores y top 5 peores.
+
+**Top 5 cadenas con mayor venta:**
+
+| Dependencia | Unidades | Valor COP |
+|---|---:|---:|
+
+**Top 5 cadenas con menor venta:**
+
+| Dependencia | Unidades | Valor COP |
+|---|---:|---:|
+
+**Datos necesarios:** `GROUP BY UPPER(TRIM("DEPENDENCIA"))` ordenado DESC y ASC.
+
+---
+
+### BLOQUE F — Tiendas
+
+**Cuando usar:** cuando el usuario pide ver resultados por punto de venta o tienda.
+Mostrar las tiendas mas relevantes para el tipo de informe solicitado.
+
+**Formato:**
+
+| Tienda (DESC_DEPENDENCIA) | Dependencia | Ciudad | Unidades | Valor COP |
+|---|---|---|---:|---:|
+
+Indicar si alguna tienda aparece inactiva (`ESTADO_TIENDA`).
+
+**Datos necesarios:** `GROUP BY UPPER(TRIM("DESC_DEPENDENCIA"))`.
+
+---
+
+### BLOQUE G — Linea de producto
+
+**Cuando usar:** cuando el informe incluye analisis de lineas de producto (columna `LINEA`).
+
+**Formato:**
+
+| Linea | Unidades | Valor COP | % del total |
+|---|---:|---:|---:|
+
+Insertar grafico `barras_verticales` o `barras_horizontales` segun cantidad de lineas.
+
+**Datos necesarios:** `GROUP BY UPPER(TRIM("LINEA"))`.
+
+---
+
+### BLOQUE H — Producto (DESC_ITEM)
+
+**Cuando usar:** cuando el usuario pide analisis por producto o descripcion de item.
+
+**Formato:**
+
+| Descripcion (DESC_ITEM) | Referencia | Unidades | Valor COP |
+|---|---|---:|---:|
+
+Identificar siempre el producto de mayor rotacion y el de menor.
+
+**Datos necesarios:** `GROUP BY UPPER(TRIM("DESC_ITEM")), UPPER(TRIM("REFERENCIA"))`.
+
+---
+
+### BLOQUE I — Referencia
+
+**Cuando usar:** cuando el usuario pide analisis por referencia, o en informes detallados.
+
+**Formato:**
+
+| Referencia | Descripcion | Unidades | Valor COP |
+|---|---|---:|---:|
+
+#### I.1 Venta de la referencia TOP por zona
+
+Tomar la referencia con mayor venta total y mostrar su distribucion geografica:
+
+| Zona | Referencia | Unidades | Valor COP |
+|---|---|---:|---:|
+
+**Datos necesarios:** `GROUP BY UPPER(TRIM("REFERENCIA"))` + subconsulta por zona para la top.
+
+---
+
+### BLOQUE J — Talla
+
+**Cuando usar:** cuando el usuario pide analisis por talla, o en informes de producto completos.
+
+El analisis de tallas tiene sentido porque Creytex vende en tallas S, M y XL.
+Muestra la distribucion de ventas por talla para identificar cual talla domina
+y si hay desbalance que sugiera ajustar el mix de produccion.
+
+**Formato:**
+
+| Talla | Unidades | % del total | Valor COP |
+|---|---:|---:|---:|
+
+Insertar grafico `barras_verticales` con distribucion de tallas.
+
+Agregar conclusion: si una talla tiene menos del 15% de participacion, puede indicar
+desbalance de inventario o baja demanda para ese segmento.
+
+**Datos necesarios:** `GROUP BY UPPER(TRIM("TALLA"))`.
+
+---
+
+### BLOQUE K — Evolucion en el tiempo
+
+**Cuando usar:** cuando el usuario pide tendencia, evolucion, comparacion por semana/mes/dia.
+
+**Formato:** tabla cronologica.
+
+| Fecha / Semana / Mes | Unidades | Valor COP | Variacion vs anterior |
+|---|---:|---:|---:|
+
+Insertar grafico `linea` con tendencia temporal.
+
+**Datos necesarios:** `GROUP BY TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')` o por `"Mes"`.
+
+---
+
+### BLOQUE L — Estado de tiendas / portafolio
+
+**Cuando usar:** cuando el usuario pide saber cuantas tiendas estan activas o el estado del portafolio.
+
+- Tiendas activas con venta en el periodo.
+- Tiendas sin venta (posiblemente inactivas).
+- Referencias con `ESTADO_SKU_MOD = 'Inactivo'` o `ESTADO_LINEA` inactivo.
+
+---
+
+### BLOQUE M — Alertas y hallazgos
+
+**Cuando usar:** informes para toma de decisiones. Siempre al final del informe.
+
+Lista numerada. Solo incluir alertas respaldadas por datos:
+
+1. Zona o tienda con caida > 15% vs periodo anterior.
+2. Referencia con rotacion muy baja (menos del 50% del promedio de su grupo).
+3. Tiendas inactivas que tenian venta en el periodo previo.
+4. Talla con baja rotacion implicita.
+5. Cualquier anomalia que los datos confirmen.
+
+Si no hay alertas con datos: "No se detectaron alertas en el periodo."
+
+---
+
+### BLOQUE N — Anexo de datos completos
+
+**Cuando usar:** cuando el usuario pide ver el listado completo.
+
+Tabla completa sin limitar filas, al final del documento.
+Indicar: "Datos extraidos de tabla `ventas` — CreytexToSQL."
+
+---
+
+## Graficos de apoyo
+
+Para los bloques D, E, F, G, H, I, J, K el pipeline puede generar graficos automaticamente.
+
+### Reglas de insercion
+
+1. El grafico se genera antes de redactar el informe.
+2. Insertar la imagen markdown exactamente como viene en los datos:
+   `![Titulo](ruta/real/del/archivo.png)` — no inventar ni modificar la ruta.
+3. Si la generacion falla: continuar sin imagen y escribir "No fue posible generar el grafico."
+
+### Grafico sugerido por bloque
+
+| Bloque | Grafico sugerido | Ubicacion |
+|--------|-----------------|-----------|
+| D — Departamentos | `barras_horizontales` | Despues de tabla |
+| D — Participacion | `torta` (<=5 items) | Despues de tabla |
+| E — Dependencias | `barras_horizontales` | Despues de tabla top 5 |
+| F — Tiendas | `barras_horizontales` | Despues de tabla |
+| G — Linea | `barras_verticales` o `barras_horizontales` | Despues de tabla |
+| J — Talla | `barras_verticales` | Despues de tabla |
+| K — Evolucion | `linea` | Despues de tabla |
 
 ---
 
@@ -319,10 +395,12 @@ que el agente los solicite explicitamente.
 
 | El usuario pide... | Bloques a usar |
 |--------------------|---------------|
-| "informe completo de ventas de enero" | A + B + C + D + F + I |
-| "reporte de ventas por tienda" | A + E + opcionalmente I |
-| "como van las ventas por talla" | A + F (por talla) |
-| "resumen ejecutivo para gerencia" | A + B + C + I |
-| "evolucion de ventas semana a semana" | A + G |
-| "cuantas tiendas estan activas" | A + H |
-| "informe detallado con todo" | A + B + C + D + E + F + G + H + I + J |
+| "informe completo de ventas" | A + B + C + D + E + F + G + I + J + M |
+| "informe de ventas de enero" | A + B + C + D + K + M |
+| "reporte por tienda" | A + F + opcionalmente M |
+| "como van las ventas por talla" | A + J |
+| "resumen ejecutivo para gerencia" | A + B + C + M |
+| "evolucion semana a semana" | A + K |
+| "cuantas tiendas estan activas" | A + L |
+| "analisis de referencias" | A + I (con subseccion I.1) |
+| "informe detallado con todo" | A + B + C + D + E + F + G + H + I + J + K + L + M + N |
