@@ -53,7 +53,7 @@ def markdown_a_docx(md_text: str) -> Document:
     style.paragraph_format.space_after = Pt(6)
     style.paragraph_format.line_spacing = 1.15
 
-    for h_level in range(1, 4):
+    for h_level in range(1, 5):
         hs = doc.styles[f'Heading {h_level}']
         hs.font.name = 'Times New Roman'
         hs.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
@@ -103,17 +103,25 @@ def markdown_a_docx(md_text: str) -> Document:
             i += 1
             continue
 
-        if text.startswith('# ') or text.startswith('## '):
-            level = 1 if text.startswith('# ') else 2
-            title = re.sub(r'^#+\s*', '', text)
+        heading_match = re.match(r'^(#{1,6})\s+(.*)', text)
+        if heading_match:
+            hashes = heading_match.group(1)
+            title = heading_match.group(2).strip()
+            level = min(len(hashes), 4)  # Word soporta Heading 1-4 nativo
             h = doc.add_heading(title, level=level)
             for run in h.runs:
                 run.font.name = 'Times New Roman'
                 if level == 1:
                     run.font.size = Pt(28)
                     run.font.color.rgb = RGBColor(0x00, 0x00, 0x00)
-                else:
+                elif level == 2:
                     run.font.color.rgb = RGBColor(0x1F, 0x4E, 0x79)
+                elif level == 3:
+                    run.font.size = Pt(12)
+                    run.font.color.rgb = RGBColor(0x2E, 0x74, 0xB5)
+                else:
+                    run.font.size = Pt(11)
+                    run.font.color.rgb = RGBColor(0x40, 0x40, 0x40)
             i += 1
             continue
 
