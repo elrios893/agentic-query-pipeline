@@ -70,7 +70,9 @@ with st.sidebar:
     carpeta = carpeta or 'informes'
     st.session_state.carpeta = carpeta
 
-    items = listar_items(carpeta)
+    # La DB guarda tipo sin 's' ('informe'/'grafico'), la UI muestra con 's'
+    tipo_db = 'informe' if carpeta == 'informes' else 'grafico'
+    items = listar_items(tipo_db)
 
     if not items:
         st.caption('(vacio)')
