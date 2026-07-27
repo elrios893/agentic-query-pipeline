@@ -25,8 +25,43 @@ COLOR_TEXTO     = '#333333'
 COLOR_SPINE     = '#D0D0D0'
 
 DPI = 150
-TAMANO_DEFECTO  = (8, 4.5)
 TAMANO_TORTA    = (6, 6)
+
+# Espacio fijo reservado para titulo, ejes y margenes (en pulgadas)
+MARGEN_VERTICAL   = 1.8   # titulo + xlabel + padding top/bottom
+MARGEN_HORIZONTAL = 3.2   # ylabel + yticklabels + padding left/right
+
+# Espaciado minimo y maximo por item (en pulgadas) para ejes de categorias
+ESPACIADO_MIN = 0.30
+ESPACIADO_MAX = 0.75
+ANCHO_MIN     = 6.0
+ANCHO_MAX     = 16.0
+ALTO_MIN      = 3.5
+ALTO_MAX      = 24.0
+
+
+def _calcular_tamano(n_items: int, horizontal: bool) -> tuple[float, float]:
+    """
+    Calcula el tamaño de figura en pulgadas basado en el número de ítems.
+
+    Fórmula: espaciado = altura_util / (n_items + 1)
+    Despejando: altura_util = espaciado * (n_items + 1)
+    altura_total = altura_util + MARGEN_VERTICAL
+
+    Para barras horizontales el eje de categorías es Y (alto varía).
+    Para barras verticales / linea el eje de categorías es X (ancho varía).
+    """
+    espaciado = max(ESPACIADO_MIN, min(ESPACIADO_MAX, 3.0 / (n_items + 1) + ESPACIADO_MIN))
+    dim_util = espaciado * (n_items + 1)
+
+    if horizontal:
+        alto  = max(ALTO_MIN, min(ALTO_MAX, dim_util + MARGEN_VERTICAL))
+        ancho = 9.0  # ancho fijo generoso para etiquetas y valores
+        return ancho, alto
+    else:
+        ancho = max(ANCHO_MIN, min(ANCHO_MAX, dim_util + MARGEN_HORIZONTAL))
+        alto  = 4.5  # alto fijo para verticales / linea
+        return ancho, alto
 
 
 def aplicar_estilo_creytex(fig, ax, formatter=None, horizontal=False):
@@ -127,14 +162,30 @@ def generar_grafico(
             'error': f'Demasiadas categorias ({len(datos)}) para grafico de torta. Usar "barras_horizontales" en su lugar.'
         }
 
-    # --- Determinar tamaño ---
-    size = TAMANO_TORTA if tipo == 'torta' else TAMANO_DEFECTO
+    # --- Determinar tamaño dinámico según tipo y número de ítems ---
+    n = len(datos)
+    if tipo == 'torta':
+        size = TAMANO_TORTA
+    elif tipo == 'barras_horizontales':
+        size = _calcular_tamano(n, horizontal=True)
+    elif tipo in ('barras_verticales', 'linea'):
+        size = _calcular_tamano(n, horizontal=False)
+    elif tipo == 'barras_agrupadas':
+        # Contar grupos únicos en X
+        n_grupos = len({str(d.get('x', '')) for d in datos})
+        size = _calcular_tamano(n_grupos, horizontal=False)
+    else:
+        size = _calcular_tamano(n, horizontal=False)
     fig, ax = plt.subplots(figsize=size, dpi=DPI)
 
     # --- Procesar datos ---
     x_vals  = [str(d.get('x', '')) for d in datos]
     y_vals  = [float(d.get('y', 0)) for d in datos]
     series  = [d.get('serie', None) for d in datos]
+    n       = len(datos)
+
+    # Tamaño de fuente adaptivo para etiquetas del eje de categorías
+    tick_fs = max(6, min(9, int(9 - n * 0.08)))
 
     # --- Formateador Y con el formato solicitado ---
     fmt_y = formato_y
@@ -147,7 +198,7 @@ def generar_grafico(
             ax.plot(x_vals, y_vals, color=COLOR_PRINCIPAL, linewidth=2, marker='o', markersize=5)
             ax.fill_between(range(len(x_vals)), y_vals, alpha=0.08, color=COLOR_PRINCIPAL)
             ax.set_xticks(range(len(x_vals)))
-            ax.set_xticklabels(x_vals, rotation=30, ha='right', fontsize=8)
+            ax.set_xticklabels(x_vals, rotation=30, ha='right', fontsize=tick_fs)
             aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
@@ -156,23 +207,25 @@ def generar_grafico(
         elif tipo == 'barras_horizontales':
             indices = list(range(len(x_vals)))
             colores = [COLOR_ALERTA if _es_alerta(v, y_vals) else COLOR_PRINCIPAL for v in y_vals]
-            ax.barh(indices, y_vals, color=colores, height=0.65, edgecolor='white', linewidth=0.3)
+            bar_h = max(0.3, min(0.75, 0.65 * 5 / max(n, 5)))
+            ax.barh(indices, y_vals, color=colores, height=bar_h, edgecolor='white', linewidth=0.3)
             ax.set_yticks(indices)
-            ax.set_yticklabels(x_vals, fontsize=9)
+            ax.set_yticklabels(x_vals, fontsize=tick_fs)
             ax.invert_yaxis()
             aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=True)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_y or etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
             for i, v in enumerate(y_vals):
                 ax.text(v + abs(max(y_vals)) * 0.01, i, formatter(v, None),
-                        va='center', fontsize=8, color=COLOR_TEXTO)
+                        va='center', fontsize=max(6, tick_fs - 1), color=COLOR_TEXTO)
 
         elif tipo == 'barras_verticales':
             indices = np.arange(len(x_vals))
             colores = [COLOR_ALERTA if _es_alerta(v, y_vals) else COLOR_PRINCIPAL for v in y_vals]
-            ax.bar(indices, y_vals, color=colores, width=0.6, edgecolor='white', linewidth=0.3)
+            bar_w = max(0.2, min(0.7, 0.6 * 5 / max(n, 5)))
+            ax.bar(indices, y_vals, color=colores, width=bar_w, edgecolor='white', linewidth=0.3)
             ax.set_xticks(indices)
-            ax.set_xticklabels(x_vals, rotation=30, ha='right', fontsize=8)
+            ax.set_xticklabels(x_vals, rotation=35, ha='right', fontsize=tick_fs)
             aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
@@ -182,7 +235,7 @@ def generar_grafico(
             if not any(d.get('serie') for d in datos):
                 plt.close(fig)
                 return {'path': None, 'width_px': 0, 'height_px': 0, 'error': 'barras_agrupadas requiere clave "serie" en cada dict de datos.'}
-            _graficar_barras_agrupadas(ax, datos, formatter)
+            _graficar_barras_agrupadas(ax, datos, formatter, tick_fs)
             aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
@@ -233,7 +286,7 @@ def _es_alerta(valor, todos):
     return valor == min(todos)
 
 
-def _graficar_barras_agrupadas(ax, datos, formatter):
+def _graficar_barras_agrupadas(ax, datos, formatter, tick_fs=8):
     from collections import OrderedDict
     grupos = OrderedDict()
     etiquetas_series = []
@@ -261,7 +314,7 @@ def _graficar_barras_agrupadas(ax, datos, formatter):
                       edgecolor='white', linewidth=0.3)
 
     ax.set_xticks(x)
-    ax.set_xticklabels(list(grupos.keys()), rotation=30, ha='right', fontsize=8)
+    ax.set_xticklabels(list(grupos.keys()), rotation=30, ha='right', fontsize=tick_fs)
     ax.legend(fontsize=8, framealpha=0.9, edgecolor=COLOR_SPINE)
 
 

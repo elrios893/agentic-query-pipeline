@@ -114,20 +114,26 @@ if st.session_state.vista == 'item' and st.session_state.item_id:
 # ---------------------------------------------------------------------------
 # Vista chat
 # ---------------------------------------------------------------------------
-def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool]:
+import os
+
+def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool]:
     try:
+        env = os.environ.copy()
+        env['PYTHONIOENCODING'] = 'utf-8'
+        env['PYTHONUTF8'] = '1'
         resultado = subprocess.run(
-            ['python', str(ORQUESTADOR), pregunta],
+            ['python', '-X', 'utf8', str(ORQUESTADOR), pregunta],
             capture_output=True, text=True, timeout=300,
-            encoding='utf-8', errors='replace',
+            encoding='utf-8', errors='replace', env=env,
         )
         salida = resultado.stdout
 
         if resultado.returncode != 0 and not salida.strip():
             error = resultado.stderr
-            return f'Error: {error or f"Proceso termino con codigo {resultado.returncode}"}', [], False
+            return f'Error: {error or f"Proceso termino con codigo {resultado.returncode}"}', [], False, False
 
         guardados = 0
+        es_informe = bool(re.search(r'====+\s*INFORME\s*====+', salida))
 
         # Detectar informes
         for m in re.finditer(r'Markdown guardado:\s*(.+)', salida):
@@ -140,8 +146,8 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool]:
             except ValueError:
                 pass
 
-        # Detectar graficos por linea OK:
-        for m in re.finditer(r'OK:\s*(.+)', salida):
+        # Detectar graficos — solo lineas que terminen en .png
+        for m in re.finditer(r'OK:\s*(\S+\.png)', salida):
             ruta_raw = m.group(1).strip()
             ruta_limpia = ruta_raw.replace('\\', '/')
             g = BASE_DIR / ruta_limpia
@@ -151,25 +157,32 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool]:
                 guardados += 1
 
         # Extraer respuesta
-        match = re.search(r'====+\s*(?:RESPUESTA|INFORME)\s*====+\s*(.*)', salida, re.DOTALL)
-        respuesta = match.group(1).strip() if match else salida.strip()
-        imagenes = re.findall(r'!\[.*?\]\((.*?)\)', respuesta)
+        match_resp = re.search(r'====+\s*RESPUESTA\s*====+\s*(.*)', salida, re.DOTALL)
+        match_inf  = re.search(r'====+\s*INFORME\s*====+\s*(.*)', salida, re.DOTALL)
 
-        # Detectar graficos embebidos en la respuesta markdown
-        for ruta_img in imagenes:
-            ruta_img_norm = ruta_img.replace('\\', '/')
-            g = BASE_DIR / ruta_img_norm
-            if g.exists():
-                titulo = g.stem.replace('chart_', '', 1)
-                guardar_item('grafico', titulo, ruta_img_norm, pregunta)
-                guardados += 1
+        if es_informe:
+            # Para informes: no mostrar el markdown completo en chat
+            respuesta = '_Informe generado y guardado en el historial. Abrelo desde la carpeta **Informes** en el panel izquierdo._'
+            imagenes = []
+        else:
+            contenido = match_resp.group(1).strip() if match_resp else salida.strip()
+            respuesta = contenido
+            imagenes = re.findall(r'!\[.*?\]\((.*?)\)', respuesta)
+            # Guardar graficos embebidos en la respuesta
+            for ruta_img in imagenes:
+                ruta_img_norm = ruta_img.replace('\\', '/')
+                g = BASE_DIR / ruta_img_norm
+                if g.exists():
+                    titulo = g.stem.replace('chart_', '', 1)
+                    guardar_item('grafico', titulo, ruta_img_norm, pregunta)
+                    guardados += 1
 
-        return respuesta, imagenes, bool(guardados)
+        return respuesta, imagenes, bool(guardados), es_informe
 
     except subprocess.TimeoutExpired:
-        return 'La consulta tardo demasiado (mas de 5 minutos). Intenta con una pregunta mas simple.', [], False
+        return 'La consulta tardo demasiado (mas de 5 minutos). Intenta con una pregunta mas simple.', [], False, False
     except Exception as e:
-        return f'Error inesperado: {str(e)}', [], False
+        return f'Error inesperado: {str(e)}', [], False, False
 
 
 # Sugerencias iniciales
@@ -204,7 +217,7 @@ if prompt := st.chat_input('Escribe tu pregunta sobre ventas...', submit_mode='d
 
     with st.chat_message('assistant'):
         with st.spinner('Analizando...'):
-            respuesta, imagenes, hay_nuevos = ejecutar_pregunta(prompt)
+            respuesta, imagenes, hay_nuevos, es_informe = ejecutar_pregunta(prompt)
         st.markdown(respuesta)
         for ruta in imagenes:
             ruta_abs = BASE_DIR / ruta
@@ -215,5 +228,7 @@ if prompt := st.chat_input('Escribe tu pregunta sobre ventas...', submit_mode='d
 
     st.session_state.messages.append({'role': 'assistant', 'content': respuesta, 'imagenes': imagenes})
     if hay_nuevos:
-        st.toast('Elemento(s) guardado(s) en el historial :material/save:', icon=None)
+        icono = ':material/description:' if es_informe else ':material/bar_chart:'
+        carpeta_nombre = 'Informes' if es_informe else 'Graficos'
+        st.toast(f'Guardado en {carpeta_nombre}', icon=None)
         st.rerun()
