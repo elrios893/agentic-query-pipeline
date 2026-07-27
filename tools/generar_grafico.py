@@ -28,39 +28,40 @@ DPI = 150
 TAMANO_TORTA    = (6, 6)
 
 # Espacio fijo reservado para titulo, ejes y margenes (en pulgadas)
-MARGEN_VERTICAL   = 1.8   # titulo + xlabel + padding top/bottom
-MARGEN_HORIZONTAL = 3.2   # ylabel + yticklabels + padding left/right
+MARGEN_ALTO  = 1.8   # titulo + xlabel + padding top/bottom
+MARGEN_ANCHO = 2.0   # ylabel + yticklabels + padding left/right
 
-# Espaciado minimo y maximo por item (en pulgadas) para ejes de categorias
+# Espaciado por item: cuántas pulgadas ocupa cada categoría en su eje
 ESPACIADO_MIN = 0.30
-ESPACIADO_MAX = 0.75
-ANCHO_MIN     = 6.0
-ANCHO_MAX     = 16.0
+ESPACIADO_MAX = 0.80
+ANCHO_MIN     = 5.0
+ANCHO_MAX     = 20.0
 ALTO_MIN      = 3.5
 ALTO_MAX      = 24.0
 
 
 def _calcular_tamano(n_items: int, horizontal: bool) -> tuple[float, float]:
     """
-    Calcula el tamaño de figura en pulgadas basado en el número de ítems.
+    Tamaño dinámico basado en la fórmula:
+        espaciado = dim_util / (n_items + 1)
+    Despejado:
+        dim_util = espaciado * (n_items + 1)
+        dim_total = dim_util + margen_fijo
 
-    Fórmula: espaciado = altura_util / (n_items + 1)
-    Despejando: altura_util = espaciado * (n_items + 1)
-    altura_total = altura_util + MARGEN_VERTICAL
-
-    Para barras horizontales el eje de categorías es Y (alto varía).
-    Para barras verticales / linea el eje de categorías es X (ancho varía).
+    - horizontal=True  → eje de categorías es Y → dim variable = ALTO
+    - horizontal=False → eje de categorías es X → dim variable = ANCHO
+    Ambos ejes usan la misma fórmula, solo cambia qué dimensión varía.
     """
     espaciado = max(ESPACIADO_MIN, min(ESPACIADO_MAX, 3.0 / (n_items + 1) + ESPACIADO_MIN))
-    dim_util = espaciado * (n_items + 1)
+    dim_util  = espaciado * (n_items + 1)
 
     if horizontal:
-        alto  = max(ALTO_MIN, min(ALTO_MAX, dim_util + MARGEN_VERTICAL))
-        ancho = 9.0  # ancho fijo generoso para etiquetas y valores
+        alto  = max(ALTO_MIN,  min(ALTO_MAX,  dim_util + MARGEN_ALTO))
+        ancho = 9.0
         return ancho, alto
     else:
-        ancho = max(ANCHO_MIN, min(ANCHO_MAX, dim_util + MARGEN_HORIZONTAL))
-        alto  = 4.5  # alto fijo para verticales / linea
+        ancho = max(ANCHO_MIN, min(ANCHO_MAX, dim_util + MARGEN_ANCHO))
+        alto  = 4.5
         return ancho, alto
 
 
