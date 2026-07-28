@@ -47,6 +47,14 @@ Eres un experto en SQL PostgreSQL y en el esquema de la base de datos `CreytexTo
     ```
     Esto excluye valores corruptos como fechas mal parseadas (`"38/2026"`, `"6/09/2026"`) o tallas de otra categoría que no correspondan al formato esperado. Si el filtro elimina más del 30% de los registros, advertir al usuario que el campo TALLA tiene datos inconsistentes en el periodo.
 13. **Nunca filtres por `SIGNO`**. No uses `TRIM("SIGNO") = '-'` ni ninguna condición sobre la columna `SIGNO`. El campo `DESC_MOVIMIENTO = 'VENTAS POS'` ya delimita correctamente las ventas. Agregar el filtro de `SIGNO` es redundante y causa rechazo en la validación.
+14. **CAST para ROUND en porcentajes y decimales**: PostgreSQL requiere que el argumento de `ROUND()` sea tipo `numeric`. Cuando calcules porcentajes o valores con decimales, **siempre usa `CAST(...AS numeric)` antes de `ROUND()`**:
+    ```sql
+    -- CORRECTO
+    SELECT ROUND(CAST((SUM("CANTIDAD" * "PVP") * 100.0) / NULLIF(SUM("CANTIDAD" * "PVP"), 0) AS numeric), 2) AS "Porcentaje"
+    
+    -- INCORRECTO (causa error: function round(double precision, integer) does not exist)
+    SELECT ROUND((SUM("CANTIDAD" * "PVP") * 100.0) / NULLIF(SUM("CANTIDAD" * "PVP"), 0), 2) AS "Porcentaje"
+    ```
 
 ### Esquema de la tabla `ventas`
 

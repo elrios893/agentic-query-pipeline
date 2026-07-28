@@ -73,6 +73,12 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - Para valor de ventas de tiendas, debe usar `"CANTIDAD" * "PVP"`. Si usa `"PVP LISTA"` para tiendas individuales → **RECHAZAR** (PVP_LISTA es solo para cadenas/macro).
 - `"PVP LISTA"` solo es válido si la pregunta es sobre clientes MACRO (cadenas, no tiendas individuales).
 
+#### 8b. CAST para ROUND en porcentajes y decimales
+- PostgreSQL requiere que el argumento de `ROUND()` sea tipo `numeric`. Si ves `ROUND()` aplicado a un resultado de división o multiplicación de números sin castear:
+  - ❌ `ROUND((SUM(...) * 100.0) / NULLIF(...), 2)` → **RECHAZAR** con error: "function round(double precision, integer) does not exist"
+  - ✅ `ROUND(CAST((SUM(...) * 100.0) / NULLIF(...) AS numeric), 2)` → CORRECTO
+- Si encuentras `ROUND()` sin `CAST(...AS numeric)` en una operación aritmética → **RECHAZAR** e indicar que se agregue el `CAST`.
+
 #### 9.  Alias con mayusculas en ORDER BY / GROUP BY
 - Si el `SELECT` define un alias con mayusculas/mixto (ej: `AS "Ventas"`, `AS "Ventas_Totales"`) y ese alias aparece en `ORDER BY` o `GROUP BY` **ya entre comillas dobles** → está **correcto, no rechazar**.
 - Solo rechaza si el alias aparece **sin comillas**: `ORDER BY Ventas DESC` (PostgreSQL lo convierte a minúsculas y no lo encuentra).
