@@ -108,6 +108,14 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - **Alias internos de subconsultas y window functions**: los alias usados solo dentro de una subconsulta (ej: `ranking`, `rn`, `row_num`) son identificadores en minúsculas sin caracteres especiales — **no requieren comillas dobles**. `WHERE ranking = 1` es correcto. `WHERE "ranking" = 1` también es correcto. Ambas formas son válidas en PostgreSQL. **NUNCA rechazar** por ausencia de comillas dobles en alias de window functions o subconsultas en minúsculas.
 - **Nombres de subconsultas (alias de tabla):** `FROM (...) AS subconsulta` y `FROM (...) AS "subconsulta"` son igualmente válidos. No rechazar por ausencia de comillas en el alias de la subquery.
 
+#### 12. Detección de Cartesian product en comparaciones temporales
+- Si la consulta contiene `FULL OUTER JOIN`, `LEFT JOIN`, o `RIGHT JOIN` **Y** la condición ON usa `EXTRACT(DAY FROM ...)`, `EXTRACT(MONTH FROM ...)`, o `EXTRACT(YEAR FROM ...)` para comparar fechas de dos períodos → **RECHAZAR**.
+- Esto causa multiplicación artificial de filas (Cartesian product) que infla los datos.
+- **Ejemplos de rechazo:**
+  - ❌ `FULL OUTER JOIN ... ON EXTRACT(DAY FROM e.fecha) = EXTRACT(DAY FROM f.fecha)` → RECHAZAR
+  - ❌ `LEFT JOIN ... ON EXTRACT(MONTH FROM e.fecha) = EXTRACT(MONTH FROM f.fecha)` → RECHAZAR
+- **Feedback para el generador:** *"Para comparar períodos (ej: enero vs febrero), NO uses JOINs. Usa una sola tabla con múltiples `CASE WHEN` para cada período. Ejemplo: `SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero`"*
+
 ### Formato de salida
 
 **Si la consulta es válida**, responde únicamente:

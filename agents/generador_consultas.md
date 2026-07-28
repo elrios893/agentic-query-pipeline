@@ -55,6 +55,54 @@ Eres un experto en SQL PostgreSQL y en el esquema de la base de datos `CreytexTo
     -- INCORRECTO (causa error: function round(double precision, integer) does not exist)
     SELECT ROUND((SUM("CANTIDAD" * "PVP") * 100.0) / NULLIF(SUM("CANTIDAD" * "PVP"), 0), 2) AS "Porcentaje"
     ```
+15. **Comparaciones de múltiples períodos temporales — NUNCA uses JOINs**: Cuando el usuario pida comparar ventas de dos meses, semanas, o períodos distintos, **NUNCA** generes `FULL OUTER JOIN`, `LEFT JOIN`, o `RIGHT JOIN` entre subqueries filtradas por fecha. Esto causa **Cartesian product** (multiplicación artificial de cifras).
+    
+    **Patrón INCORRECTO:**
+    ```sql
+    SELECT ...
+    FROM (SELECT * FROM "ventas" WHERE fecha BETWEEN '2026-01-01' AND '2026-01-31') e
+    FULL OUTER JOIN
+         (SELECT * FROM "ventas" WHERE fecha BETWEEN '2026-02-01' AND '2026-02-28') f
+    ON EXTRACT(DAY FROM e.fecha) = EXTRACT(DAY FROM f.fecha)
+    -- ↑ Esto multiplica: cada fila ene se cruza con TODAS de feb
+    ```
+    
+    **Patrón CORRECTO:**
+    - Una sola tabla en FROM
+    - Múltiples `CASE WHEN` para cada período
+    - Cada fila se procesa UNA SOLA VEZ
+    
+    **Ejemplo (2 períodos):**
+    ```sql
+    SELECT
+        EXTRACT(DAY FROM TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS "Dia",
+        SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-01-31'
+                 THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Ventas_Enero",
+        SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-02-01' AND '2026-02-28'
+                 THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Ventas_Febrero"
+    FROM "ventas"
+    WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+      AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-02-28'
+    GROUP BY 1
+    ORDER BY "Dia";
+    ```
+    
+    **Ejemplo (3 períodos):**
+    ```sql
+    SELECT
+        EXTRACT(DAY FROM TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS "Dia",
+        SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-01-31'
+                 THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Enero",
+        SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-02-01' AND '2026-02-28'
+                 THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Febrero",
+        SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-03-01' AND '2026-03-31'
+                 THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Marzo"
+    FROM "ventas"
+    WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+      AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-03-31'
+    GROUP BY 1
+    ORDER BY "Dia";
+    ```
 
 ### Esquema de la tabla `ventas`
 
@@ -224,4 +272,38 @@ WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
   AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-01-31'
 GROUP BY dia
 ORDER BY dia;
+```
+
+**Entrada:** "Compara las ventas de enero y febrero día a día"
+**Salida:**
+```sql
+SELECT
+    EXTRACT(DAY FROM TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS "Dia",
+    SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-01-31'
+             THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Ventas_Enero",
+    SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-02-01' AND '2026-02-28'
+             THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Ventas_Febrero"
+FROM "ventas"
+WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+  AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-02-28'
+GROUP BY 1
+ORDER BY "Dia";
+```
+
+**Entrada:** "Qué tal van enero, febrero y marzo comparados"
+**Salida:**
+```sql
+SELECT
+    EXTRACT(DAY FROM TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS "Dia",
+    SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-01-31'
+             THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Enero",
+    SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-02-01' AND '2026-02-28'
+             THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Febrero",
+    SUM(CASE WHEN TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-03-01' AND '2026-03-31'
+             THEN "CANTIDAD" * "PVP" ELSE 0 END) AS "Marzo"
+FROM "ventas"
+WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+  AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-03-31'
+GROUP BY 1
+ORDER BY "Dia";
 ```

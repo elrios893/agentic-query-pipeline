@@ -80,6 +80,7 @@ def _reglas_gen() -> str:
 8. EXCEPCION: columna LINEA tiene casing mixto. Usar solo TRIM("LINEA") = '11 - Dama Deportivo'. NUNCA UPPER(TRIM("LINEA")).
 9. NUNCA uses TRIM("SIGNO") ni ningun filtro sobre "SIGNO". DESC_MOVIMIENTO = 'VENTAS POS' ya delimita las ventas.
 10. CAST para ROUND en porcentajes y decimales: PostgreSQL requiere CAST(...AS numeric) antes de ROUND(). Si calculas porcentajes o decimales, usa siempre ROUND(CAST((SUM(...) * 100.0) / NULLIF(...) AS numeric), 2). NUNCA uses ROUND() sin CAST en operaciones aritmeticas.
+11. Comparaciones de periodos temporales (ej: enero vs febrero, mes1 vs mes2): NUNCA uses FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN. Usa UNA SOLA tabla con multiples CASE WHEN para cada periodo. Ejemplo correcto: SELECT SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero FROM tabla WHERE fecha BETWEEN ene_inicio AND feb_fin GROUP BY ...
 """
 
 def _reglas_val() -> str:
@@ -101,7 +102,8 @@ def _reglas_val() -> str:
 11. LIMIT y window functions: si la consulta usa RANK(), ROW_NUMBER() o DENSE_RANK() con un filtro WHERE sobre el ranking (ej: WHERE ranking = 1), el resultado esta acotado por el numero de grupos del PARTITION BY — NO exigir LIMIT. Lineas de producto son ~10, departamentos ~33, tallas ~10: estos GROUP BY nunca necesitan LIMIT.
 12. Alias internos de subconsultas: alias en minusculas sin caracteres especiales (ranking, rn, row_num, subconsulta) NO requieren comillas dobles. WHERE ranking = 1 es correcto. NUNCA rechazar por ausencia de comillas en alias de window functions o nombres de subquery.
 13. NO rechazar dos veces por el mismo problema. Si el generador ya corrigio un error en el intento anterior, aprobarlo aunque queden imperfecciones menores de estilo.
-14. CAST para ROUND: si la consulta usa ROUND() sobre una operacion aritmetica (division, multiplicacion), DEBE incluir CAST(...AS numeric). Si ves ROUND((... * 100) / ..., N) sin CAST → RECHAZAR. La forma correcta es ROUND(CAST((... * 100) / ... AS numeric), N)."""
+14. CAST para ROUND: si la consulta usa ROUND() sobre una operacion aritmetica (division, multiplicacion), DEBE incluir CAST(...AS numeric). Si ves ROUND((... * 100) / ..., N) sin CAST → RECHAZAR. La forma correcta es ROUND(CAST((... * 100) / ... AS numeric), N).
+15. Deteccion de Cartesian product en comparaciones de periodos: si la consulta contiene FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN combinado con EXTRACT(DAY FROM ...) = EXTRACT(DAY FROM ...) u otro EXTRACT en la condicion ON → RECHAZAR. Feedback: "Para comparar periodos (enero vs febrero), NO uses JOINs. Usa UNA tabla con multiples CASE WHEN para cada periodo: SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero"."""
 
 PATRONES_INFORME = re.compile(
     r'\b(informe|reporte|report|documento|word|docx|'
