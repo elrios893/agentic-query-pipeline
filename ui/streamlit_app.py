@@ -168,19 +168,24 @@ def _detectar_tipo(pregunta: str, es_informe: bool) -> str:
 
 def _extraer_sql_queries(stdout: str) -> list[dict]:
     """
-    Extrae las consultas SQL ejecutadas del stdout del orquestador.
-    El orquestador emite lineas con el patron:
-        SQL_LOG::<nombre>::<sql en una sola linea>
+    Extrae las consultas SQL del stdout del orquestador.
+
+    El orquestador emite bloques con este formato:
+        SQL_LOG::<nombre>::<sql multilinea>
+        SQL_LOG_END
+
+    Preserva los saltos de linea del SQL para que quede legible en el JSON.
     Devuelve lista de {"nombre": str, "sql": str}.
     """
     queries = []
-    for linea in stdout.splitlines():
-        if linea.startswith('SQL_LOG::'):
-            partes = linea.split('::', 2)
-            if len(partes) == 3:
-                nombre = partes[1].strip()
-                sql = partes[2].strip()
-                queries.append({'nombre': nombre, 'sql': sql})
+    patron = re.compile(
+        r'^SQL_LOG::([^:]+)::(.+?)^SQL_LOG_END',
+        re.DOTALL | re.MULTILINE,
+    )
+    for m in patron.finditer(stdout):
+        nombre = m.group(1).strip()
+        sql = m.group(2).strip()
+        queries.append({'nombre': nombre, 'sql': sql})
     return queries
 
 
