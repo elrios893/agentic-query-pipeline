@@ -166,6 +166,24 @@ def _detectar_tipo(pregunta: str, es_informe: bool) -> str:
     return 'grafico' if patrones.search(pregunta) else 'consulta'
 
 
+def _extraer_sql_queries(stdout: str) -> list[dict]:
+    """
+    Extrae las consultas SQL ejecutadas del stdout del orquestador.
+    El orquestador emite lineas con el patron:
+        SQL_LOG::<nombre>::<sql en una sola linea>
+    Devuelve lista de {"nombre": str, "sql": str}.
+    """
+    queries = []
+    for linea in stdout.splitlines():
+        if linea.startswith('SQL_LOG::'):
+            partes = linea.split('::', 2)
+            if len(partes) == 3:
+                nombre = partes[1].strip()
+                sql = partes[2].strip()
+                queries.append({'nombre': nombre, 'sql': sql})
+    return queries
+
+
 def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool]:
     t0 = time.time()
     try:
@@ -230,7 +248,8 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool]:
         proveedor = os.environ.get('LLM_PROVIDER', '')
         modelo = os.environ.get(f'{proveedor.upper()}_MODEL', '')
         tipo = _detectar_tipo(pregunta, es_informe)
-        prompt_id = registrar_prompt(pregunta, tipo, time.time() - t0, True, archivos, modelo, proveedor)
+        sql_queries = _extraer_sql_queries(salida)
+        prompt_id = registrar_prompt(pregunta, tipo, time.time() - t0, True, archivos, modelo, proveedor, sql_queries)
         st.session_state.ultimo_prompt_id = prompt_id
         st.session_state.feedback_dado = False
 

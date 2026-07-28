@@ -246,6 +246,7 @@ def generar_sql_y_validar(pregunta: str, system_gen: str, system_val: str) -> st
     consulta_generada = llamar_llm(system_gen, pregunta)
     consulta_limpia = extraer_sql(consulta_generada)
     print(f'Consulta generada:\n{consulta_limpia}\n')
+    print(f'SQL_LOG::consulta_principal::{consulta_limpia.replace(chr(10), " ")}')
 
     for intento in range(MAX_ITERACIONES):
         print(f'[{MODELO}] Validando (intento {intento + 1})...')
@@ -653,6 +654,7 @@ Responde con un JSON con esta estructura exacta:
             sql_limpia += ';'
 
         print(f'  Ejecutando: {nombre}...')
+        print(f'  SQL_LOG::{nombre}::{sql_limpia.replace(chr(10), " ")}')
         resultado = ejecutar_consulta(sql_limpia, limite=500)
         if resultado.get('success'):
             resultados[nombre] = resultado
