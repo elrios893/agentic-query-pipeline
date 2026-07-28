@@ -338,6 +338,11 @@ desbalance de inventario o baja demanda para ese segmento.
 
 Insertar grafico `linea` con tendencia temporal.
 
+**Regla de granularidad — CRITICA:** la tabla y el grafico DEBEN usar exactamente los mismos datos con la misma granularidad. No agregar "(Muestra)" ni subconjuntos distintos en la tabla versus el grafico.
+- Si el periodo tiene ≤ 20 dias → mostrar todos los dias en la tabla Y en el grafico.
+- Si el periodo tiene > 20 dias → agrupar por semana (o cada 15 dias) tanto en la tabla como en el grafico. Indicar en el titulo del bloque la granularidad usada, ej: "Evolucion Semanal".
+- Nunca mostrar en la tabla una granularidad distinta a la del grafico. Ambos deben ser coherentes.
+
 **Datos necesarios:** `GROUP BY TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')` o por `"Mes"`.
 
 ---
