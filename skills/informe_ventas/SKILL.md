@@ -171,7 +171,7 @@ Cada bullet debe ser una conclusion, no un dato crudo.
 | Unidades vendidas totales | 8,420 | |
 | Valor total de ventas | $126,300,000 | |
 | Tiendas con venta en el periodo | 45 | |
-| Ticket promedio por transaccion | $15,000 | |
+| Ticket promedio por transaccion | $15,000 | 
 | Linea mas vendida | [LINEA] | [unidades o valor] |
 | Referencia top | [REFERENCIA] | [unidades o valor] |
 | Talla mas vendida | [TALLA] | [unidades] |
@@ -198,13 +198,24 @@ Insertar grafico `barras_horizontales` despues de la tabla.
 Insertar grafico de `torta` (solo si hay 5 o menos departamentos con participacion relevante;
 si son mas, usar barras horizontales con % del total en la tabla).
 
-#### D.3 Desglose por zona (ZONA)
+#### D.3 Desglose por ciudad
+**Siempre incluir** cuando el informe se filtra por un departamento especifico
+(ej: "informe de Antioquia", "ventas en Valle del Cauca").
+Si el informe es nacional/general, incluir solo las top 10 ciudades por valor.
+
+| Ciudad | Departamento | Unidades | Valor COP |
+|---|---|---:|---:|
+
+**Datos necesarios:** `GROUP BY UPPER(TRIM("CIUDAD")), UPPER(TRIM("DEPARTAMENTO"))`.
+Si hay filtro por departamento: agregar `WHERE UPPER(TRIM("DEPARTAMENTO")) = 'NOMBRE'`.
+
+#### D.4 Desglose por zona (ZONA)
 Solo si el usuario pide analisis por zona o si el informe es detallado.
 
 | Zona | Unidades | Valor COP |
 |---|---:|---:|
 
-**Datos necesarios:** `GROUP BY UPPER(TRIM("DEPARTAMENTO"))`, `UPPER(TRIM("ZONA"))`.
+**Datos necesarios:** `GROUP BY UPPER(TRIM("DEPARTAMENTO"))`, `UPPER(TRIM("ZONA"))`, `UPPER(TRIM("CIUDAD"))`.
 
 ---
 

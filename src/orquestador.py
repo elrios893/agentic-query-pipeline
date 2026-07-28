@@ -575,6 +575,17 @@ def generar_informe(pregunta: str):
 Tienes disponible la siguiente skill de informes que define los bloques disponibles:
 {skill_informe_planning}
 
+### Mapeo obligatorio bloque → columna SQL
+Para cada bloque, DEBES usar estas columnas exactas al generar la SQL:
+- Bloque I (Referencia): GROUP BY TRIM("REFERENCIA") — columna exacta: "REFERENCIA"
+- Bloque J (Talla): GROUP BY TRIM("TALLA") — columna exacta: "TALLA"
+- Bloque G (Linea): GROUP BY TRIM("LINEA") — columna exacta: "LINEA"
+- Bloque H (Producto): GROUP BY TRIM("DESC_ITEM") — columna exacta: "DESC_ITEM"
+- Bloque D (Geografico): GROUP BY UPPER(TRIM("DEPARTAMENTO")) para nivel depto; GROUP BY UPPER(TRIM("CIUDAD")), UPPER(TRIM("DEPARTAMENTO")) para nivel ciudad. Si el informe es de un departamento especifico, filtrar por ese departamento en la consulta de ciudad.
+- Bloque E (Dependencias): GROUP BY UPPER(TRIM("DEPENDENCIA")) — columna: "DEPENDENCIA"
+- Bloque F (Tiendas): GROUP BY UPPER(TRIM("DESC_DEPENDENCIA")) — columna: "DESC_DEPENDENCIA"
+- Bloque K (Evolucion): GROUP BY TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')
+
 Tu tarea es determinar que datos necesitas consultar en PostgreSQL para construir
 ese informe. Genera UNA consulta SQL por cada bloque de datos que necesites.
 
@@ -587,24 +598,24 @@ Responde con un JSON con esta estructura exacta:
   ]
 }}
 
-- "bloques": lista de letras de bloques de la skill que usaras en el informe.
-- "consultas": una entrada por cada consulta SQL necesaria para alimentar esos bloques.
-- Genera solo las consultas que necesitas para responder la peticion del usuario.
-- No incluyas consultas de datos que no vayas a usar en el informe.
-- Responde SOLO con el JSON, sin texto adicional.
+- "bloques": lista de letras de bloques que usaras.
+- "consultas": una entrada por cada consulta SQL necesaria.
+- Si el informe es general/completo, incluir consultas para TODOS los bloques relevantes incluyendo I y J.
+- Responde SOLO con el JSON, sin texto adicional ni bloques de codigo.
 """
 
     print(f'[{MODELO}] Planificando consultas segun la peticion...')
     respuesta_plan = llamar_llm(system_gen, prompt_planificacion, temperatura=0.1)
 
-    # Extraer JSON de la respuesta
+    # Extraer JSON de la respuesta — usar decoder que encuentra el primer objeto valido
     plan = None
-    bloques_json = re.search(r'\{.*\}', respuesta_plan, re.DOTALL)
-    if bloques_json:
-        try:
-            plan = json.loads(bloques_json.group(0))
-        except json.JSONDecodeError:
-            pass
+    try:
+        decoder = json.JSONDecoder()
+        idx = respuesta_plan.find('{')
+        if idx != -1:
+            plan, _ = decoder.raw_decode(respuesta_plan, idx)
+    except (json.JSONDecodeError, ValueError):
+        pass
 
     if not plan or 'consultas' not in plan or not plan['consultas']:
         print('No se pudo parsear el plan. Usando consultas de respaldo...')
@@ -623,6 +634,8 @@ Responde con un JSON con esta estructura exacta:
 
     print(f'Bloques seleccionados: {plan.get("bloques", [])}')
     print(f'Consultas a ejecutar: {len(plan["consultas"])}')
+    for q in plan['consultas']:
+        print(f'  - {q.get("nombre")}')
 
     # ------------------------------------------------------------------
     # FASE 2: ejecutar cada consulta del plan (sin validador — el LLM
