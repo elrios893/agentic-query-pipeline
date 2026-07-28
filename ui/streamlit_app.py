@@ -291,9 +291,29 @@ if not st.session_state.messages:
         label_visibility='collapsed',
     )
     if seleccion:
-        st.session_state.messages.append({'role': 'user', 'content': SUGERENCIAS[seleccion]})
-        st.rerun()
+        prompt = SUGERENCIAS[seleccion]
+        st.session_state.messages.append({'role': 'user', 'content': prompt})
+        
+        with st.chat_message('user'):
+            st.markdown(prompt)
 
+        with st.chat_message('assistant'):
+            with st.spinner('Analizando...'):
+                respuesta, imagenes, hay_nuevos, es_informe = ejecutar_pregunta(prompt)
+            st.markdown(respuesta)
+            for ruta in imagenes:
+                ruta_abs = BASE_DIR / ruta
+                if ruta_abs.exists():
+                    st.image(str(ruta_abs))
+                else:
+                    st.caption(f'[Grafico no encontrado: {ruta}]')
+
+        st.session_state.messages.append({'role': 'assistant', 'content': respuesta, 'imagenes': imagenes})
+        if hay_nuevos:
+            carpeta_nombre = 'Informes' if es_informe else 'Graficos'
+            st.toast(f'Guardado en {carpeta_nombre}', icon=None)
+        st.rerun()
+        
 # ---------------------------------------------------------------------------
 # Historial de mensajes
 # ---------------------------------------------------------------------------
