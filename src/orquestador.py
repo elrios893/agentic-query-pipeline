@@ -578,7 +578,7 @@ Tienes disponible la siguiente skill de informes que define los bloques disponib
 ### Mapeo obligatorio bloque → columna SQL
 Para cada bloque, DEBES usar estas columnas exactas al generar la SQL:
 - Bloque I (Referencia): GROUP BY TRIM("REFERENCIA") — columna exacta: "REFERENCIA"
-- Bloque J (Talla): GROUP BY TRIM("TALLA") — columna exacta: "TALLA"
+- Bloque J (Talla): GROUP BY TRIM("TALLA") WHERE TRIM("TALLA") ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$'
 - Bloque G (Linea): GROUP BY TRIM("LINEA") — columna exacta: "LINEA"
 - Bloque H (Producto): GROUP BY TRIM("DESC_ITEM") — columna exacta: "DESC_ITEM"
 - Bloque D (Geografico): GROUP BY UPPER(TRIM("DEPARTAMENTO")) para nivel depto; GROUP BY UPPER(TRIM("CIUDAD")), UPPER(TRIM("DEPARTAMENTO")) para nivel ciudad. Si el informe es de un departamento especifico, filtrar por ese departamento en la consulta de ciudad.
