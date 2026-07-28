@@ -160,80 +160,22 @@ Si en el futuro existen otras tablas, usa `LLAVE_DEP2`, `COD_SIESA`, `LLAVE_NAVA
 
 Las columnas `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU` y `LLAVE_DEP` pueden ser completamente nulas. No las uses sin verificar antes.
 
-##  Esquema completo de la tabla `ventas`
+##  Esquema de la tabla `ventas`
 
-| Columna | Tipo PostgreSQL | Descripción |
-|---------|----------------|-------------|
-| `ORIGEN` | TEXT | Nombre del archivo origen |
-| `COD_DEPENDENCIA` | DOUBLE PRECISION | Código de dependencia |
-| `DEP_DESTINO` | DOUBLE PRECISION | Dependencia destino |
-| `DESC_DEP_DESTINO` | TEXT | Descripción dependencia destino |
-| `PLU` | DOUBLE PRECISION | Identificador interno del SKU |
-| `EAN` | DOUBLE PRECISION | Código de barras del SKU |
-| `FECHA_MVTO` | TEXT | Fecha del movimiento (formato dd/mm/aaaa) |
-| `DESC_MOVIMIENTO` | TEXT | Tipo de movimiento |
-| `SIGNO` | TEXT | Signo del movimiento (+/-) |
-| `CANTIDAD` | BIGINT | Unidades movidas |
-| `FECHA_PROD` | TEXT | Fecha de producción |
-| `REPROCESO_VTAS` | TEXT | Reproceso de ventas |
-| `DEPENDENCIA` | TEXT | Macro cliente: AGAVAL, EXITO, JUMBO, LA MONTAÑA, NADELCO, OLIMPICA |
-| `COD_BODEGA` | DOUBLE PRECISION | Código de bodega |
-| `RAZON_SOCIAL` | TEXT | Razón social del cliente |
-| `TIPO_DEPENDENCIA` | TEXT | Tipo de dependencia |
-| `GTIN_ALMACEN` | DOUBLE PRECISION | Código de ubicación de tienda |
-| `COD_SIESA` | DOUBLE PRECISION | Código de tienda en ERP |
-| `DESC_DEPENDENCIA` | TEXT | Nombre de la tienda |
-| `CLIMA` | TEXT | CALIDO, FRIO o TEMPLADO |
-| `DEPARTAMENTO` | TEXT | Departamento geográfico |
-| `CIUDAD` | TEXT | Ciudad |
-| `ZONA` | TEXT | Zona geográfica |
-| `ZONA_EX` | TEXT | Zona Éxito (solo este cliente) |
-| `LLAVE_DEP2` | DOUBLE PRECISION | Concatena bodega + ubicación dependencia |
-| `ESTADO_TIENDA` | TEXT | Estado de la tienda (Activa/Inactiva) |
-| `LLAVE_DEP` | TEXT | Llave de dependencia (100% nula) |
-| `REFERENCIA` | TEXT | Referencia interna de la prenda |
-| `DESC_ITEM` | TEXT | Descripción de la prenda |
-| `COD_COLOR` | DOUBLE PRECISION | Código numérico del color |
-| `COLOR` | TEXT | Nombre del color |
-| `TALLA` | TEXT | Talla de la prenda |
-| `LINEA_GEN` | TEXT | Género: A (Bebes), J (Junior), M (Hombres), U (Unisex), W (Mujer) |
-| `LINEA_DETLL` | TEXT | Categoría: A (Bebes), B (Beachwear), E (Exterior), J (Junior), L (Leasurewear), P (Performance) |
-| `ESTILO_ITEM` | TEXT | Macrocategoria: 01 (Top), 02 (Camiseta), 04 (Blusa), 05 (Camisa), 07 (Chaqueta), 08 (Buzo), 09 (Vestido), 10 (Enterizo), 14 (Pantalones), 17 (Jogger), 20 (Falda), 22 (Conjunto), 24 (Gorra), 27 (Bolso) |
-| `GRUPO` | TEXT | Estilo específico dentro de la macrocategoria (manga corta/larga, larga/corta) |
-| `LINEA` | TEXT | Línea de la prenda |
-| `MARCA` | TEXT | 0002 (Baby Planet), 0012 (Bata), 0018 (Amazon Mint), 8888 (Na), B (Belife) |
-| `TIPO_DE_NEGOCIO` | TEXT | Origen de venta: 0001 (Marca propia), 0003 (Paquete completo nacional), 0004 (Paquete completo exportacion) |
-| `CUENTO` | TEXT | Colección de la prenda |
-| `TIPO_PORTAFOLIO_MOD` | TEXT | Tipo de portafolio (Línea) |
-| `FCH_ACT_PORTAFOLIO` | TEXT | Fecha activación portafolio (casi siempre nula) |
-| `ESTADO_SKU_MOD` | TEXT | Estado del SKU (Activo/Inactivo) |
-| `FCH_ACT_SKU` | TEXT | Fecha cambio estado SKU (casi siempre nula) |
-| `PERFIL_PRENDA` | TEXT | Perfil de la prenda (Inferior/Superior) |
-| `CAMBIO_PORTAFOLIO?` | DOUBLE PRECISION | Indicador de cambio de portafolio |
-| `PVP` | DOUBLE PRECISION | Precio venta al consumidor final |
-| `PVP LISTA` | DOUBLE PRECISION | Precio venta al cliente macro |
-| `PVP HIST` | DOUBLE PRECISION | PVP histórico (siempre nulo) |
-| `PVP HIST LISTA` | DOUBLE PRECISION | PVP lista histórico (siempre nulo) |
-| `VENTA $ PVP LISTA` | DOUBLE PRECISION | Venta en $ a precio de lista |
-| `VENTA $ PVP HIST LISTA` | DOUBLE PRECISION | Venta histórica (siempre nulo) |
-| `DESC_GRUPO` | TEXT | Descripción del grupo |
-| `MODELO` | TEXT | Modelo (Linea = colección permanente, Moda = temporada) |
-| `LINEA_MY` | TEXT | Línea MY |
-| `LLAVE_NAVAL` | TEXT | Concatena COD_BODEGA + DEPENDENCIA + LINEA_MY |
-| `ESTADO_LINEA` | TEXT | Estado de la prenda en la tienda (Activa/Inactiva) |
-| `Año` | BIGINT | Año del movimiento |
-| `Mes` | BIGINT | Mes del movimiento |
-| `TIPO_PORTAFOLIO_MOD_2` | TEXT | Tipo de portafolio (Linea, Moda) |
+> **Fuente de verdad única:** el esquema completo (columnas, tipos, valores válidos por campo)
+> está documentado en `agents/generador_consultas.md`, sección **"Esquema de la tabla `ventas`"**.
+> No se duplica aquí para evitar desincronización. Consultarlo antes de generar cualquier query.
+>
+> Columnas clave a recordar:
+> - `LINEA`: casing mixto exacto — **NO usar `UPPER()`**. Valores: `"10 - Dama Exterior"`, `"11 - Dama Deportivo"`, `"12 - Hombre Exterior"`, `"13 - Hombre Deportivo"`, `"14 - Junior Femenino"`, `"15 - Junior Masculino"`, `"16 - Bebita"`, `"17 - Bebito"`, `"19 - Primis Bebito"`, `"20 - Primis Bebita"`.
+> - `FECHA_MVTO`: TEXT formato `D/M/YYYY`. Usar siempre `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`.
+> - `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU`, `LLAVE_DEP`: siempre nulas, no usar.
+> - Valor de venta: `"CANTIDAD" * "PVP"`. Nunca `"PVP LISTA"` salvo macroclientes.
 
 ##  Notas importantes del negocio
 
-- El cliente entrega datos **hasta la columna REPROCESO_VTAS**. Las columnas restantes son combinaciones internas.
-- **Jerarquía de producto**: `LINEA` → `LINEA_DETLL` (performance/exterior/junior) → `ESTILO_ITEM` (macrocategoria: camisa, falda, pantaloneta) → `GRUPO` (estilo específico: manga corta, larga). Elegir el nivel según la granularidad que pida el usuario.
-- `FCH_ACT_PORTAFOLIO` registra el momento en que una prenda pasa de colección a línea. Aparece una única vez y cambia `ESTADO_SKU_MOD` a "Activo".
-- `PVP HIST` y `PVP HIST LISTA` **no deben usarse** (siempre nulos).
-- `MODELO` puede ser `Linea` (prendas que gustaron y se venden siempre) o `Moda` (prendas de temporada).
-- **CRÍTICO — Columna de precio para ventas**: Para calcular valor de ventas SIEMPRE usa `"CANTIDAD" * "PVP"`. `PVP` es el precio que paga el consumidor final. NO uses `"PVP LISTA"` para ventas de tiendas individuales.
-- **`PVP LISTA` solo para clientes MACRO**: Usa `"PVP LISTA"` únicamente cuando la pregunta sea sobre cadenas o macroclientes (ej: "ventas totales a Éxito"), no para tiendas individuales.
+> Las notas de negocio completas están en `agents/generador_consultas.md`, sección **"Notas de negocio"**.
+> Regla crítica de precio: usar `"CANTIDAD" * "PVP"` para ventas. `"PVP LISTA"` solo para macroclientes.
 
 ##  Ejemplos de consultas útiles
 
@@ -289,3 +231,4 @@ LIMIT 10;
 | `ORDER BY Ventas DESC` (alias con mayuscula sin comillas) | PostgreSQL dobla `ventas` a minusculas y no encuentra el alias. Usa `ORDER BY "Ventas" DESC` |
 | `GROUP BY 1` con columnas con espacios | Falla porque los alias con espacios no se resuelven. Usa nombres completos |
 | Olvidar el `;` al final | PostgreSQL no ejecutará la consulta |
+| Utilizar `UPPER` al tratar la columna `LINEA`  | Esta columna no posee sus valores en mayuscula |
