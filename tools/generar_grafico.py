@@ -120,6 +120,7 @@ def generar_grafico(
     output_path='reports/charts/',
     formato_y='moneda',
     timestamp=None,
+    max_ticks=15,
 ):
     """
     Genera un grafico PNG a partir de datos tabulares.
@@ -139,6 +140,11 @@ def generar_grafico(
         moneda | unidades | porcentaje
     timestamp : str or None
         Para vincular al informe. Formato YYYYMMDD_HHMMSS.
+    max_ticks : int
+        Maximo de etiquetas visibles en el eje X para graficos de linea y barras
+        verticales. Si hay mas puntos que este limite, se muestran solo un
+        subconjunto equiespaciado de ticks (pero se grafican todos los datos).
+        Default: 15.
 
     Retorna
     -------
@@ -198,8 +204,17 @@ def generar_grafico(
         if tipo == 'linea':
             ax.plot(x_vals, y_vals, color=COLOR_PRINCIPAL, linewidth=2, marker='o', markersize=5)
             ax.fill_between(range(len(x_vals)), y_vals, alpha=0.08, color=COLOR_PRINCIPAL)
-            ax.set_xticks(range(len(x_vals)))
-            ax.set_xticklabels(x_vals, rotation=30, ha='right', fontsize=tick_fs)
+            # Samplear ticks si hay demasiados puntos para evitar superposicion
+            if n > max_ticks:
+                step = max(1, n // max_ticks)
+                tick_indices = list(range(0, n, step))
+                # Asegurar que el ultimo punto siempre aparezca
+                if tick_indices[-1] != n - 1:
+                    tick_indices.append(n - 1)
+            else:
+                tick_indices = list(range(n))
+            ax.set_xticks(tick_indices)
+            ax.set_xticklabels([x_vals[i] for i in tick_indices], rotation=30, ha='right', fontsize=tick_fs)
             aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
@@ -225,8 +240,17 @@ def generar_grafico(
             colores = [COLOR_ALERTA if _es_alerta(v, y_vals) else COLOR_PRINCIPAL for v in y_vals]
             bar_w = max(0.2, min(0.7, 0.6 * 5 / max(n, 5)))
             ax.bar(indices, y_vals, color=colores, width=bar_w, edgecolor='white', linewidth=0.3)
-            ax.set_xticks(indices)
-            ax.set_xticklabels(x_vals, rotation=35, ha='right', fontsize=tick_fs)
+            # Samplear ticks si hay demasiadas categorias
+            if n > max_ticks:
+                step = max(1, n // max_ticks)
+                tick_indices = list(range(0, n, step))
+                if tick_indices[-1] != n - 1:
+                    tick_indices.append(n - 1)
+                ax.set_xticks([indices[i] for i in tick_indices])
+                ax.set_xticklabels([x_vals[i] for i in tick_indices], rotation=35, ha='right', fontsize=tick_fs)
+            else:
+                ax.set_xticks(indices)
+                ax.set_xticklabels(x_vals, rotation=35, ha='right', fontsize=tick_fs)
             aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
