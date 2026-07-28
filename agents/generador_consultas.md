@@ -104,6 +104,13 @@ Eres un experto en SQL PostgreSQL y en el esquema de la base de datos `CreytexTo
     ORDER BY "Dia";
     ```
 
+16. **Generación de tablas markdown**: Cuando el usuario pida explícitamente "tabla", "compara", o "ranking", genera una consulta SQL que devuelva datos listos para formatear como tabla markdown. Asegúrate de:
+    - Usar `ROUND(..., 2)` para decimales en moneda (ej: `$126.50`)
+    - Alinear números a la derecha en markdown: `| ---: |`
+    - Incluir separador de miles: `SUM(...) AS valor` → renderizar como `$126,300,000`
+    - Si hay más de 20 resultados, el sistema agregará nota automática: "(Mostrando top 20 de X resultados)"
+    - Para rankings: incluir columna de posición numérica (1, 2, 3...) y % del total
+
 ### Esquema de la tabla `ventas`
 
 | Columna | Tipo | Descripción corta |

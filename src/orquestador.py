@@ -229,6 +229,75 @@ def extraer_seccion_skill(nombre_skill: str, titulo_seccion: str) -> str:
     seccion = '\n'.join(lineas[inicio:fin]).strip()
     return seccion
 
+def es_intencion_tabla(texto: str) -> bool:
+    """Detecta si el usuario pide explícitamente una tabla."""
+    patrones = re.compile(
+        r'\b(tabla|compara|ranking|desglose|top\s+\d+|listar|lista|detalle)\b',
+        re.IGNORECASE
+    )
+    return bool(patrones.search(texto))
+
+def formatear_resultado_como_tabla(resultado: dict, limite: int = 20) -> str:
+    """
+    Convierte un resultado SQL en tabla markdown formateada.
+    
+    Args:
+        resultado: dict con 'columns' y 'rows'
+        limite: máximo de filas a mostrar (default 20)
+    
+    Returns:
+        Tabla markdown formateada o empty string si no hay datos
+    """
+    cols = resultado.get('columns', [])
+    rows = resultado.get('rows', [])
+    
+    if not cols or not rows:
+        return ''
+    
+    # Limitar filas
+    total_filas = len(rows)
+    rows_mostrados = rows[:limite]
+    
+    # Encabezado
+    lineas = []
+    lineas.append('| ' + ' | '.join(str(c) for c in cols) + ' |')
+    
+    # Separador (detectar si columna es numérica)
+    separadores = []
+    for col in cols:
+        # Si el nombre contiene palabras de número, alinear a derecha
+        if any(x in col.lower() for x in ['unidades', 'valor', 'cantidad', 'total', '%', 'dia', 'ranking']):
+            separadores.append('---:')
+        else:
+            separadores.append('---')
+    lineas.append('| ' + ' | '.join(separadores) + ' |')
+    
+    # Filas
+    for row in rows_mostrados:
+        fila_formateada = []
+        for i, val in enumerate(row):
+            # Formatear valores
+            if isinstance(val, (int, float)):
+                # Si es número grande, agregar separador de miles
+                if isinstance(val, int) and val > 999:
+                    val_str = f"{val:,}"
+                elif isinstance(val, float):
+                    val_str = f"{val:,.2f}"
+                else:
+                    val_str = str(val)
+            else:
+                val_str = str(val) if val is not None else ''
+            fila_formateada.append(val_str)
+        lineas.append('| ' + ' | '.join(fila_formateada) + ' |')
+    
+    tabla = '\n'.join(lineas)
+    
+    # Agregar nota si hay más filas
+    if total_filas > limite:
+        tabla += f'\n\n*(Mostrando {limite} de {total_filas} resultados)*'
+    
+    return tabla
+
 def llamar_llm(system_prompt: str, user_prompt: str, temperatura: float = 0.1) -> str:
     import time
     max_reintentos = 4
@@ -778,6 +847,15 @@ Responde con un JSON con esta estructura exacta:
     # FASE 4: redactar el informe con los bloques seleccionados
     # ------------------------------------------------------------------
     print(f'\n[{MODELO}] Redactando informe...')
+    
+    # Formatear resultados como tablas si es necesario
+    tablas_markdown = {}
+    for nombre, res in resultados.items():
+        if res.get('rows'):
+            tabla = formatear_resultado_como_tabla(res, limite=50)
+            if tabla:
+                tablas_markdown[nombre] = tabla
+    
     prompt_redaccion = f"""El usuario solicito:
 "{pregunta}"
 
@@ -797,6 +875,15 @@ Instrucciones:
 - Usa unicamente los datos proporcionados. No inventes cifras.
 - Formatea numeros con separador de miles y moneda COP donde corresponda.
 - Si un bloque necesita un dato que no esta disponible, omite ese bloque o indica "Sin informacion".
+"""
+    
+    if tablas_markdown:
+        prompt_redaccion += f"""
+
+### Tablas de Resultados para cada bloque
+Inserta estas tablas markdown DEBAJO del titulo de cada bloque, como formato principal de presentacion de datos:
+
+{json.dumps(tablas_markdown, ensure_ascii=False, indent=2)}
 """
     if imagenes_por_bloque:
         prompt_redaccion += f"""
@@ -873,8 +960,17 @@ def procesar_consulta(pregunta: str):
         print(f'[{MODELO}] Evaluando grafico para la consulta...')
         imagenes_chat = generar_graficos_consulta(resultado, pregunta, timestamp_graf)
 
+    # ------------------------------------------------------------------
+    # Formatear como tabla si es una solicitud de tabla
+    # ------------------------------------------------------------------
+    tabla_markdown = ''
+    if es_intencion_tabla(pregunta) and resultado.get('rows'):
+        tabla_markdown = formatear_resultado_como_tabla(resultado)
+
     print(f'[{MODELO}] Redactando respuesta...')
     prompt_red = json.dumps(resultado, ensure_ascii=False, indent=2)
+    if tabla_markdown:
+        prompt_red += '\n\n### Tabla de Resultados\n' + tabla_markdown + '\n\nPor favor, incluir esta tabla en la respuesta.'
     if imagenes_chat:
         prompt_red += '\n\n### Grafico generado\n' + '\n'.join(imagenes_chat) + '\n\nSi hay un grafico, incluirlo en la respuesta como imagen markdown.'
     respuesta_final = llamar_llm(

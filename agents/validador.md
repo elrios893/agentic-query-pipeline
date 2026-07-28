@@ -116,6 +116,13 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
   - ❌ `LEFT JOIN ... ON EXTRACT(MONTH FROM e.fecha) = EXTRACT(MONTH FROM f.fecha)` → RECHAZAR
 - **Feedback para el generador:** *"Para comparar períodos (ej: enero vs febrero), NO uses JOINs. Usa una sola tabla con múltiples `CASE WHEN` para cada período. Ejemplo: `SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero`"*
 
+#### 13. Validación de tablas markdown (si el resultado incluye tabla)
+- Si la consulta está destinada a generar una tabla (el usuario pidió "tabla", "compara", "ranking"):
+  - Verificar que tenga `GROUP BY` o `CASE WHEN` (no filas crudas sin agregación)
+  - Verificar que tenga `ORDER BY` para ordenar los resultados
+  - Si el resultado esperado > 20 filas, el sistema agregará automáticamente `LIMIT 20` o indicará "(Mostrando top 20 de X)"
+  - ✅ Aprobar sin rechazar si la lógica es correcta
+
 ### Formato de salida
 
 **Si la consulta es válida**, responde únicamente:

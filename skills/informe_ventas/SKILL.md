@@ -371,6 +371,55 @@ Si no hay alertas con datos: "No se detectaron alertas en el periodo."
 
 ---
 
+### BLOQUE O — Tablas Interactivas
+
+**Cuando usar:** cuando el usuario pide explícitamente "tabla", "compara", "ranking", o solicita ver datos en formato tabular para análisis detallado.
+
+**Formato:** tabla markdown con alineación de números a la derecha y formato de moneda.
+
+**Tres subtipos de tabla:**
+
+#### O.1 Tabla simple (ranking o desglose)
+Mostrar una dimensión con métricas ordenadas. Máximo 20 filas; si hay más, indicar que hay más resultados.
+
+| Departamento | Unidades | Valor COP |
+|---|---:|---:|
+| ANTIOQUIA | 8,420 | $126,300,000 |
+| BOGOTA | 5,200 | $78,000,000 |
+
+**Datos necesarios:** `GROUP BY columna, ORDER BY metrica DESC`
+
+#### O.2 Tabla comparativa (períodos)
+Dos o más períodos lado a lado (ej: enero | febrero). Incluir columna de variación %.
+
+| Día | Ventas Enero | Ventas Febrero | Variación |
+|---:|---:|---:|---:|
+| 1 | $100,000 | $120,000 | +20.0% |
+| 2 | $95,000 | $110,000 | +15.8% |
+
+**Datos necesarios:** `CASE WHEN para cada período, GROUP BY día`
+
+#### O.3 Tabla de ranking
+Con número de posición (1, 2, 3...) e incluir % del total como contexto.
+
+| Ranking | Referencia | Unidades | Valor COP | % Total |
+|---:|---|---:|---:|---:|
+| 1 | REF-001 | 2,450 | $36,750,000 | 12.5% |
+| 2 | REF-002 | 1,890 | $28,350,000 | 9.6% |
+
+**Formato Markdown obligatorio:**
+- Alinear números a la derecha: `| ---: |`
+- Unidades con separador de miles: `8,420`
+- Moneda con $ y separador de miles: `$126,300,000`
+- Porcentajes: `12.5%` (1 decimal)
+- Fechas: `15/01/2026`
+
+**Expansión de tabla:**
+- Si resultado tiene ≤ 20 filas → mostrar todas en la tabla
+- Si resultado tiene > 20 filas → mostrar top 20 y agregar nota: "(Mostrando top 20 de X resultados)"
+
+---
+
 ### BLOQUE N — Anexo de datos completos
 
 **Cuando usar:** cuando el usuario pide ver el listado completo.
