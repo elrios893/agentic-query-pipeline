@@ -55,19 +55,31 @@ linea" → graficar. Si es "numero suelto" → no graficar.
 
 ## Mapeo: tipo de dato / pregunta → tipo de grafico
 
+> **REGLA PRIORITARIA — eje X temporal:** Antes de evaluar cualquier otra regla,
+> inspeccioná la columna que irá en el eje X. Si los valores son fechas, días,
+> semanas o meses (ej: `2026-01-15`, `Ene`, `Semana 3`, `Lunes`) o si la columna
+> se llama `Fecha`, `dia`, `fecha_mvto`, `semana`, `mes` → el tipo **siempre es
+> `linea`**, sin excepción. Nunca usar `barras_verticales` ni `barras_horizontales`
+> cuando el eje X representa tiempo.
+
 | Cuando los datos muestran... | Ejemplo de pregunta | Tipo de grafico | Formato_y tipico |
 |-----------------------------|---------------------|-----------------|------------------|
-| Evolucion temporal (dias, semanas, meses) | "tendencia de ventas en el mes" | `linea` | moneda o unidades |
+| Eje X con fechas, dias, semanas o meses — **cualquier intervalo temporal** | "ventas por dia en mayo", "tendencia semanal", "como van las ventas dia a dia" | `linea` | moneda o unidades |
 | Comparacion entre categorias, ≤10 items | "top 5 departamentos por ventas" | `barras_horizontales` | moneda o unidades |
 | Mismo conjunto de categorias, 2 periodos | "ventas este mes vs mes anterior por zona" | `barras_agrupadas` | moneda o unidades |
 | Composicion/participacion, ≤5 categorias | "participacion por linea de producto" | `torta` | porcentaje |
 | Composicion/participacion, >5 categorias | "participacion por departamento" | `barras_horizontales` | porcentaje |
-| Distribucion simple de variable categorica | "unidades por talla (S/M/XL)" | `barras_verticales` | unidades |
+| Distribucion simple de variable categorica (tallas, colores, referencias) | "unidades por talla (S/M/XL)" | `barras_verticales` | unidades |
 | Ranking simple (1. Antioquia 2. Bogota...) | "cuales son las 3 zonas que mas vendieron" | `barras_horizontales` | moneda o unidades |
 
 > **Regla de oro para barras:** cuando las etiquetas del eje X son largas
 > (nombres de 10+ caracteres), preferir `barras_horizontales` para que se
 > lean bien. Las verticales rotan el texto y son mas dificiles de escanear.
+
+> **Señales de que el eje X es temporal** (usar `linea` obligatoriamente):
+> - La columna SQL se llama `Fecha`, `dia`, `fecha`, `semana`, `mes`, `periodo`, `fecha_mvto` o similar
+> - Los valores tienen formato de fecha: `2026-05-01`, `01/05/2026`, `May`, `Semana 18`
+> - La pregunta contiene palabras como: "por día", "por semana", "por mes", "evolución", "tendencia", "día a día", "intervalo", "entre el ... y el ...", "durante", "a lo largo de"
 
 ---
 

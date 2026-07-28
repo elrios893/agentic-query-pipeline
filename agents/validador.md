@@ -57,15 +57,17 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 #### 6.  Limite razonable segun contexto
 - Consultas puntuales (top N, busqueda especifica, dia concreto): deben tener `LIMIT 20` a menos que el usuario especifique otro.
 - Consultas de periodo (mes completo, varios meses, tendencias): deben tener `LIMIT 1000` o mas.
-- Agregaciones (COUNT, SUM con GROUP BY de pocos grupos): no requieren LIMIT.
-- Si la consulta tiene GROUP BY con muchas categorias y no tiene LIMIT → **RECHAZAR** con sugerencia de agregar `LIMIT 200`.
+- Agregaciones (COUNT, SUM con GROUP BY de pocos grupos conocidos): **no requieren LIMIT**. Ejemplos de grupos acotados: departamentos (~33), ciudades (~200), líneas de producto (~10), tallas (~10), climas (3), zonas (~5).
+- Si la consulta usa `RANK()`, `ROW_NUMBER()` o `DENSE_RANK()` con un filtro `WHERE ranking = 1` (o similar) sobre una subconsulta → el resultado está acotado por definición al número de grupos del PARTITION BY. **No exigir LIMIT** en estos casos.
+- Si la consulta tiene GROUP BY con categorias verdaderamente abiertas (DESC_ITEM, REFERENCIA, DESC_DEPENDENCIA sin filtro adicional) y no tiene LIMIT → sugerir `LIMIT 200`, pero **no rechazar** si el contexto de la pregunta sugiere que el usuario quiere ver todos los resultados.
+- **Nunca rechazar dos veces por el mismo problema de LIMIT.** Si ya se rechazo una vez por LIMIT y el generador lo corrigio agregando un LIMIT razonable (50, 100, 200, 1000), aprobar en el siguiente intento.
 
 #### 7.  Lógica de negocio
 - Si pregunta por "ventas", el filtro debe incluir `"DESC_MOVIMIENTO" = 'VENTAS POS'`.
 - Si pregunta por "devoluciones", el filtro debe incluir `"DESC_MOVIMIENTO" = 'CAMBIOS DE MERCANCIA ACLIENTE'`.
 - `DESC_MOVIMIENTO` solo acepta 3 valores: `'VENTAS POS'`, `'CAMBIOS DE MERCANCIA ACLIENTE'`, `'DEVOLUCIÓN AL PROVEEDOR'`. Cualquier otro valor literal en un filtro `WHERE "DESC_MOVIMIENTO" = '...'` → **RECHAZAR**.
-- **El filtro por `SIGNO` NO es obligatorio.** Aunque el campo existe (`-` = salida, `+` = entrada), filtrar por él es unicamente necesario si el usuario lo pide. Una consulta sin `WHERE SIGNO = '-'` es válida.
-- Si suma `CANTIDAD`, tener en cuenta que las ventas salen como negativo en `SIGNO`, pero no es necesario filtrar por signo si el contexto de `DESC_MOVIMIENTO` ya lo delimita.
+- **El filtro por `SIGNO` NUNCA debe aparecer en las consultas.** No es obligatorio ni deseable — el contexto de `DESC_MOVIMIENTO` ya delimita la dirección del movimiento. Si una query generada incluye `TRIM("SIGNO") = '-'` o cualquier filtro sobre `SIGNO` → **RECHAZAR** e indicar que se elimine ese filtro.
+- Si suma `CANTIDAD`, el contexto de `DESC_MOVIMIENTO = 'VENTAS POS'` ya garantiza que son salidas. No es necesario ni correcto filtrar adicionalmente por `SIGNO`.
 
 #### 8.  Columnas de precio correctas
 - Para valor de ventas de tiendas, debe usar `"CANTIDAD" * "PVP"`. Si usa `"PVP LISTA"` para tiendas individuales → **RECHAZAR** (PVP_LISTA es solo para cadenas/macro).
@@ -87,6 +89,7 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - ✅ `SELECT "REFERENCIA" ...` → CORRECTO
 - ✅ `SELECT UPPER(TRIM("REFERENCIA")) ...` → también CORRECTO
 - **NUNCA rechazar** por ausencia de `UPPER()` en el SELECT. Es una optimización opcional, no un requisito.
+- **EXCEPCION CRITICA — columna `LINEA`**: sus valores en la BD tienen casing mixto (`"10 - Dama Exterior"`, `"11 - Dama Deportivo"`, etc.). Usar `UPPER(TRIM("LINEA"))` en un filtro es un **ERROR** porque transforma el valor y no matchea. La forma correcta es `TRIM("LINEA") = '11 - Dama Deportivo'`. **NUNCA rechazar** una query por usar `TRIM("LINEA")` sin `UPPER()`. Al contrario, si ves `UPPER(TRIM("LINEA"))` en un filtro WHERE → **RECHAZAR** por error de lógica.
 
 #### 11.  Sin errores de sintaxis obvios
 - `GROUP BY` debe incluir todas las columnas no agregadas del `SELECT`. **PostgreSQL permite usar alias del SELECT en GROUP BY** — esto es válido y no debe rechazarse.
@@ -96,6 +99,8 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - ✅ `SELECT "REFERENCIA" ... GROUP BY TRIM("REFERENCIA")` → CORRECTO (TRIM no cambia el valor agrupado)
 - Las comillas simples y dobles deben estar balanceadas.
 - El `;` final se agrega automaticamente, no es necesario verificarlo.
+- **Alias internos de subconsultas y window functions**: los alias usados solo dentro de una subconsulta (ej: `ranking`, `rn`, `row_num`) son identificadores en minúsculas sin caracteres especiales — **no requieren comillas dobles**. `WHERE ranking = 1` es correcto. `WHERE "ranking" = 1` también es correcto. Ambas formas son válidas en PostgreSQL. **NUNCA rechazar** por ausencia de comillas dobles en alias de window functions o subconsultas en minúsculas.
+- **Nombres de subconsultas (alias de tabla):** `FROM (...) AS subconsulta` y `FROM (...) AS "subconsulta"` son igualmente válidos. No rechazar por ausencia de comillas en el alias de la subquery.
 
 ### Formato de salida
 

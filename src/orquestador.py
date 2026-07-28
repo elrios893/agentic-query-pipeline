@@ -71,13 +71,14 @@ def _reglas_gen() -> str:
 
 ### Reglas adicionales obligatorias
 1. Siempre usa comillas dobles en TODOS los nombres de columna.
-2. Usa TRIM() en columnas de texto: TRIM("SIGNO"), TRIM("DEPARTAMENTO"), TRIM("DESC_MOVIMIENTO").
-3. "SIGNO" puede ser null, '-' con espacios, o '+' con espacios.
-4. FECHA_MVTO es TEXT en formato D/M/YYYY sin ceros (ej: 1/7/2026). USA TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY'). NUNCA uses ::DATE ni TO_DATE con 'DD/MM/YYYY'.
-5. Para valor de ventas usa "CANTIDAD" * "PVP". NUNCA uses "PVP LISTA" para tiendas individuales.
-6. "PVP LISTA" SOLO se usa si la consulta es sobre clientes MACRO (cadenas), no tiendas.
-7. Si un alias tiene mayusculas (ej: "Ventas"), ponle comillas dobles en ORDER BY y GROUP BY: ORDER BY "Ventas" DESC.
-8. Textos siempre en mayusculas: DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM deben usar UPPER(TRIM(...)) en SELECT.
+2. Usa TRIM() en columnas de texto: TRIM("DEPARTAMENTO"), TRIM("DESC_MOVIMIENTO"), TRIM("LINEA"), etc.
+3. FECHA_MVTO es TEXT en formato D/M/YYYY sin ceros (ej: 1/7/2026). USA TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY'). NUNCA uses ::DATE ni TO_DATE con 'DD/MM/YYYY'.
+4. Para valor de ventas usa "CANTIDAD" * "PVP". NUNCA uses "PVP LISTA" para tiendas individuales.
+5. "PVP LISTA" SOLO se usa si la consulta es sobre clientes MACRO (cadenas), no tiendas.
+6. Si un alias tiene mayusculas (ej: "Ventas"), ponle comillas dobles en ORDER BY y GROUP BY: ORDER BY "Ventas" DESC.
+7. Textos siempre en mayusculas en SELECT: DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM deben usar UPPER(TRIM(...)).
+8. EXCEPCION: columna LINEA tiene casing mixto. Usar solo TRIM("LINEA") = '11 - Dama Deportivo'. NUNCA UPPER(TRIM("LINEA")).
+9. NUNCA uses TRIM("SIGNO") ni ningun filtro sobre "SIGNO". DESC_MOVIMIENTO = 'VENTAS POS' ya delimita las ventas.
 """
 
 def _reglas_val() -> str:
@@ -92,9 +93,13 @@ def _reglas_val() -> str:
 4. Rechaza TO_DATE con formato 'DD/MM/YYYY' o ::DATE. Solo acepta TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY').
 5. Revisa que use "CANTIDAD" * "PVP" para valor de ventas, no "PVP LISTA" (a menos que sea consulta macro).
 6. Revisa que los alias con mayusculas usen comillas dobles en ORDER BY/GROUP BY.
-7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER, RECHAZAR.
+7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER en el SELECT, NO rechazar — es opcional.
 8. Verifica que el año en los literales de fecha sea {anio}. Si ves 2024, 2025 u otro año en una fecha literal, RECHAZAR.
-"""
+9. LINEA — excepcion critica: la columna LINEA tiene casing mixto. TRIM("LINEA") = '11 - Dama Deportivo' es CORRECTO. UPPER(TRIM("LINEA")) en un filtro WHERE es un ERROR — RECHAZAR si aparece. NUNCA rechazar una query por usar TRIM("LINEA") sin UPPER.
+10. SIGNO — prohibido: NUNCA debe aparecer TRIM("SIGNO") ni ningun filtro sobre "SIGNO" en la query. Si aparece → RECHAZAR e indicar que se elimine. DESC_MOVIMIENTO = 'VENTAS POS' ya delimita las ventas sin necesidad de SIGNO.
+11. LIMIT y window functions: si la consulta usa RANK(), ROW_NUMBER() o DENSE_RANK() con un filtro WHERE sobre el ranking (ej: WHERE ranking = 1), el resultado esta acotado por el numero de grupos del PARTITION BY — NO exigir LIMIT. Lineas de producto son ~10, departamentos ~33, tallas ~10: estos GROUP BY nunca necesitan LIMIT.
+12. Alias internos de subconsultas: alias en minusculas sin caracteres especiales (ranking, rn, row_num, subconsulta) NO requieren comillas dobles. WHERE ranking = 1 es correcto. NUNCA rechazar por ausencia de comillas en alias de window functions o nombres de subquery.
+13. NO rechazar dos veces por el mismo problema. Si el generador ya corrigio un error en el intento anterior, aprobarlo aunque queden imperfecciones menores de estilo."""
 
 PATRONES_INFORME = re.compile(
     r'\b(informe|reporte|report|documento|word|docx|'
@@ -296,6 +301,13 @@ Bloques seleccionados: {plan.get('bloques', [])}
 
 Decide que graficos generar (maximo 4). Responde SOLO con un JSON valido.
 
+REGLA CRITICA DE TIPO:
+- Si la columna_x contiene fechas, dias, semanas o meses (nombre de columna: Fecha, dia, fecha,
+  semana, mes, periodo, o valores con formato de fecha), el tipo DEBE ser "linea" obligatoriamente.
+  NUNCA usar "barras_verticales" ni "barras_horizontales" cuando el eje X es temporal.
+- Usar "barras_horizontales" o "barras_verticales" solo cuando el eje X son categorias
+  (departamentos, tiendas, tallas, referencias, lineas de producto, etc.).
+
 Formato:
 [
   {{
@@ -454,6 +466,13 @@ Decide si tiene sentido generar un grafico con estos datos.
 - Si no tiene sentido graficar (datos muy pocos, solo una fila, todo texto),
   responde: []
 - Si tiene sentido, genera hasta 1 grafico.
+
+REGLA CRITICA DE TIPO:
+- Si la columna_x contiene fechas, dias, semanas o meses (nombre de columna: Fecha, dia, fecha,
+  semana, mes, periodo, o valores con formato de fecha), el tipo DEBE ser "linea" obligatoriamente.
+  NUNCA usar "barras_verticales" ni "barras_horizontales" cuando el eje X es temporal.
+- Usar "barras_horizontales" o "barras_verticales" solo cuando el eje X son categorias
+  (departamentos, tiendas, tallas, referencias, lineas de producto, etc.).
 
 Responde SOLO con un JSON valido con este formato:
 [
