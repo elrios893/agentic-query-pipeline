@@ -184,6 +184,51 @@ def leer_skill_bloques_resumen(nombre: str) -> str:
 def limpiar_texto(texto: str) -> str:
     return ''.join(c for c in texto if unicodedata.category(c) != 'So').strip()
 
+def extraer_seccion_skill(nombre_skill: str, titulo_seccion: str) -> str:
+    """
+    Extrae una sección específica de un skill para ahorrar tokens.
+    
+    Ej: extraer_seccion_skill('graficos_ventas', 'Mapeo:')
+    → extrae desde '## Mapeo: tipo de dato / pregunta → tipo de grafico'
+       hasta la próxima sección '## ...'
+    
+    Args:
+        nombre_skill: nombre del skill (ej: 'graficos_ventas')
+        titulo_seccion: patrón de búsqueda (ej: 'Mapeo:', 'Como transformar', 'Cuando NO')
+    
+    Returns:
+        Texto de la sección encontrada, o skill completo si no encuentra
+    """
+    contenido = leer_skill_sin_yaml(nombre_skill)
+    
+    # Buscar la sección por patrón (case-insensitive)
+    lineas = contenido.split('\n')
+    inicio = None
+    fin = None
+    
+    # Encontrar línea donde empieza la sección
+    for i, linea in enumerate(lineas):
+        if titulo_seccion.lower() in linea.lower() and linea.startswith('##'):
+            inicio = i
+            break
+    
+    if inicio is None:
+        # Si no encuentra, retornar el skill completo
+        return contenido
+    
+    # Encontrar la siguiente sección (## ) después del inicio
+    for i in range(inicio + 1, len(lineas)):
+        if lineas[i].startswith('## ') and lineas[i] != lineas[inicio]:
+            fin = i
+            break
+    
+    if fin is None:
+        fin = len(lineas)
+    
+    # Retornar la sección (del inicio al fin)
+    seccion = '\n'.join(lineas[inicio:fin]).strip()
+    return seccion
+
 def llamar_llm(system_prompt: str, user_prompt: str, temperatura: float = 0.1) -> str:
     import time
     max_reintentos = 4
@@ -284,7 +329,14 @@ Pregunta original del usuario: {pregunta}"""
             sys.exit(1)
 
 def generar_graficos_informe(resultados, pregunta, plan, timestamp):
-    skill_graficos = leer_skill_sin_yaml('graficos_ventas')
+    """
+    Genera graficos para un informe completo.
+    
+    OPTIMIZACION: Envía solo la sección "Mapeo" de la skill graficos_ventas
+    en lugar del archivo completo (~80% menos tokens).
+    """
+    # OPTIMIZACION: Extraer solo la sección "Mapeo" en lugar de skill completo
+    skill_graficos = extraer_seccion_skill('graficos_ventas', 'Mapeo:')
 
     # Construir resumen de columnas disponibles por consulta
     resumen_columnas = {}
@@ -311,6 +363,9 @@ REGLA CRITICA DE TIPO:
   NUNCA usar "barras_verticales" ni "barras_horizontales" cuando el eje X es temporal.
 - Usar "barras_horizontales" o "barras_verticales" solo cuando el eje X son categorias
   (departamentos, tiendas, tallas, referencias, lineas de producto, etc.).
+
+Disponible la siguiente guia de tipos de graficos:
+{skill_graficos}
 
 Formato:
 [
@@ -444,13 +499,17 @@ def generar_graficos_consulta(resultado: dict, pregunta: str, timestamp: str) ->
     """
     Genera graficos para una consulta simple (no informe).
     Retorna lista de strings markdown de imagenes generadas.
+    
+    OPTIMIZACION: Envía solo la sección "Mapeo" de la skill graficos_ventas
+    en lugar del archivo completo (~80% menos tokens).
     """
     cols = resultado.get('columns', [])
     rows = resultado.get('rows', [])
     if not cols or not rows or len(rows) < 2:
         return []
 
-    skill_graficos = leer_skill_sin_yaml('graficos_ventas')
+    # OPTIMIZACION: Extraer solo la sección "Mapeo" en lugar de skill completo
+    skill_graficos = extraer_seccion_skill('graficos_ventas', 'Mapeo:')
 
     resumen = {
         'consulta': {
@@ -477,6 +536,9 @@ REGLA CRITICA DE TIPO:
   NUNCA usar "barras_verticales" ni "barras_horizontales" cuando el eje X es temporal.
 - Usar "barras_horizontales" o "barras_verticales" solo cuando el eje X son categorias
   (departamentos, tiendas, tallas, referencias, lineas de producto, etc.).
+
+Disponible la siguiente guia de tipos de graficos:
+{skill_graficos}
 
 Responde SOLO con un JSON valido con este formato:
 [
