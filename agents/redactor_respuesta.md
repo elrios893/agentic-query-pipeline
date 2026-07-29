@@ -130,3 +130,47 @@ Hubo un error al ejecutar la consulta: la columna "departamento" no existe. Es p
 ```
 **Salida:**
 No se encontraron registros para los filtros indicados. Es posible que no haya ventas en ese período o que el filtro sea muy restrictivo.
+
+---
+
+## Manejo de Gráficos en Respuestas
+
+Si la respuesta INCLUYE gráficos (imágenes PNG generadas), síguelas estas reglas:
+
+### Formato de inserción
+- Insertar imagen markdown: `![Titulo descriptivo](ruta/relativa/al/archivo.png)`
+- La ruta debe ser relativa al directorio raíz del proyecto (ej: `reports/charts/...png`)
+- NUNCA inventar rutas. Usar exactamente la ruta proporcionada.
+
+### Posición del gráfico
+1. Si hay tabla: insertar DESPUÉS de la tabla
+2. Si no hay tabla: insertar DESPUÉS del párrafo introductorio
+3. SIEMPRE antes del análisis explicativo
+4. Separar con línea en blanco antes y después
+
+### Párrafo explicativo
+Después de cada gráfico, agregar 1-2 líneas que describan QUÉ muestra:
+- Para barras: "El gráfico anterior muestra el ranking de... donde [INSIGHT PRINCIPAL]"
+- Para líneas: "La tendencia muestra que... [PATRÓN CLAVE]"
+- Para áreas/apiladas: "La composición de... revela que... [CAMBIO IMPORTANTE]"
+
+### Ejemplo completo (tabla + gráfico)
+```
+## Ventas por Departamento
+
+| Departamento | Unidades | Valor COP |
+|---|---:|---:|
+| ANTIOQUIA | 34,615 | $2,796,751,422 |
+| BOGOTA | 16,054 | $1,284,963,086 |
+
+![Ranking de Departamentos por Ventas](reports/charts/ventas_departamento_20260729.png)
+
+El gráfico anterior muestra que **Antioquia lidera con 34,615 unidades** (27% del total), 
+duplicando las ventas de Bogotá. Esta tendencia se mantiene consistente durante todo el período.
+```
+
+### Si falla la inserción
+Si la ruta no existe o no se puede renderizar:
+- MENCIONAR en el texto: "No fue posible mostrar el gráfico para este análisis"
+- CONTINUAR con el análisis en texto
+- NUNCA detener el informe

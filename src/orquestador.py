@@ -125,6 +125,27 @@ def es_intencion_informe(texto: str) -> bool:
 def es_intencion_grafico(texto: str) -> bool:
     return bool(PATRONES_GRAFICO.search(texto))
 
+# ---------------------------------------------------------------------------
+# Mapeo oficial: Bloque Informe → Tipo(s) de Gráfico Esperado(s)
+# ---------------------------------------------------------------------------
+MAPEO_BLOQUES_GRAFICOS = {
+    'A': None,  # Resumen ejecutivo: sin gráfico (números directos)
+    'B': None,  # KPIs principales: sin gráfico (solo números)
+    'C': 'barras_agrupadas',  # Variación vs mes anterior: comparación de períodos
+    'D': ['barras_horizontales', 'torta'],  # Geográfico (departamentos/ciudades): ranking o participación
+    'E': 'barras_horizontales',  # Dependencias: ranking
+    'F': 'barras_horizontales',  # Tiendas: ranking
+    'G': ['barras_verticales', 'barras_horizontales'],  # Línea de producto: distribución o ranking
+    'H': 'barras_verticales',  # Producto (referencias): distribución por cantidad
+    'I': 'barras_horizontales',  # Análisis de referencias: ranking top
+    'J': 'barras_verticales',  # Tallas: distribución (XS, S, M, L, XL, XXL)
+    'K': 'linea',  # Evolución temporal: SIEMPRE línea (fechas, días, semanas)
+    'L': 'barras_verticales',  # Tiendas activas: barras simples
+    'M': None,  # Alertas: sin gráfico
+    'N': None,  # Anexo de datos completos: tabla de datos, sin gráfico
+    'O': None,  # Tablas interactivas: ya son markdown tables, sin gráfico PNG
+}
+
 def leer_instrucciones(archivo: str) -> str:
     ruta = AGENTS_DIR / archivo
     return ruta.read_text(encoding='utf-8')
@@ -454,7 +475,13 @@ Pregunta original del usuario: {pregunta}"""
 
 def generar_graficos_informe(resultados, pregunta, plan, timestamp):
     """
-    Genera graficos para un informe completo.
+    Genera graficos para un informe completo usando MAPEO_BLOQUES_GRAFICOS.
+    
+    Retorna dict: {
+        'bloque_A': ['![titulo](ruta)'],
+        'bloque_K': ['![titulo](ruta)'],
+        ...
+    }
     
     OPTIMIZACION: Envía solo la sección "Mapeo" de la skill graficos_ventas
     en lugar del archivo completo (~80% menos tokens).
@@ -473,30 +500,52 @@ def generar_graficos_informe(resultados, pregunta, plan, timestamp):
                 'columnas': cols,
             }
 
+    # Construir información del mapeo oficial
+    mapeo_info = "### Mapeo oficial de bloques → tipos de gráficos\n"
+    bloques_activos = plan.get('bloques', [])
+    for bloque in bloques_activos:
+        tipo_esperado = MAPEO_BLOQUES_GRAFICOS.get(bloque)
+        if tipo_esperado:
+            if isinstance(tipo_esperado, list):
+                tipo_str = " o ".join(tipo_esperado)
+            else:
+                tipo_str = tipo_esperado
+            mapeo_info += f"- Bloque {bloque}: espera gráfico tipo `{tipo_str}`\n"
+        else:
+            mapeo_info += f"- Bloque {bloque}: NO requiere gráfico\n"
+
     prompt = f"""Resumen de datos disponibles (columnas exactas):
 {json.dumps(resumen_columnas, ensure_ascii=False, indent=2)}
 
+Bloques del informe: {bloques_activos}
+
+{mapeo_info}
+
 Pregunta del usuario: "{pregunta}"
-Bloques seleccionados: {plan.get('bloques', [])}
 
-Decide que graficos generar (maximo 4). Responde SOLO con un JSON valido.
+Decide qué gráficos generar (máximo 1 por bloque, máximo 4 en total).
+Responde SOLO con un JSON válido (incluso si es lista vacía).
 
-REGLA CRITICA DE TIPO:
-- Si la columna_x contiene fechas, dias, semanas o meses (nombre de columna: Fecha, dia, fecha,
-  semana, mes, periodo, o valores con formato de fecha), el tipo DEBE ser "linea" obligatoriamente.
-  NUNCA usar "barras_verticales" ni "barras_horizontales" cuando el eje X es temporal.
-- Usar "barras_horizontales" o "barras_verticales" solo cuando el eje X son categorias
-  (departamentos, tiendas, tallas, referencias, lineas de producto, etc.).
+REGLA CRÍTICA - EJE TEMPORAL:
+Si la columna_x tiene fechas, días, semanas o meses (nombres: Fecha, dia, fecha,
+semana, mes, período, fecha_mvto, etc.), el tipo DEBE ser "linea" obligatoriamente.
+NUNCA usar "barras_verticales" ni "barras_horizontales" cuando el eje X es temporal.
 
-Disponible la siguiente guia de tipos de graficos:
+REGLA PRIORITARIA - MAPEO DE BLOQUES:
+Antes de generar un gráfico, verifica que:
+1. El bloque_destino está en {bloques_activos}
+2. El tipo de gráfico coincide con MAPEO_BLOQUES_GRAFICOS
+3. Si el mapeo dice "NO requiere gráfico", NO generes uno para ese bloque
+
+Tipos de gráficos disponibles:
 {skill_graficos}
 
-Formato:
+Formato esperado:
 [
   {{
     "nombre": "identificador_unico",
     "tipo": "barras_horizontales",
-    "titulo": "Titulo del grafico",
+    "titulo": "Titulo que cuente la historia (ej: 'Antioquia lidera con 34.6K unidades')",
     "etiqueta_x": "Departamento",
     "etiqueta_y": "Unidades Vendidas",
     "formato_y": "unidades",
@@ -508,11 +557,10 @@ Formato:
   }}
 ]
 
-- "consulta_origen" debe coincidir con una clave del resumen de datos.
-- "columna_x" y "columna_y" deben ser nombres exactos de columna visibles en "columnas".
-- "columna_serie": nombre de columna para series (barras_agrupadas) o null.
-- "formato_y": "moneda" | "unidades" | "porcentaje".
-- Si no hay graficos que valgan la pena, responde: []
+- "bloque_destino": letra del bloque donde irá insertada la imagen (D, E, F, G, H, I, J, K, L)
+- "columna_serie": nombre de columna para series (barras_agrupadas) o null
+- "formato_y": "moneda" | "unidades" | "porcentaje"
+- Si no hay gráficos que valgan la pena, responde: []
 """
 
     print(f'  Enviando prompt con {len(resumen_columnas)} consultas disponibles...')
@@ -521,17 +569,21 @@ Formato:
 
     bloque_json = re.search(r'\[.*\]', respuesta, re.DOTALL)
     if not bloque_json:
-        print('  No se pudo parsear JSON de graficos.')
+        print('  ⚠ No se pudo parsear JSON de gráficos.')
         return {}
 
     try:
         specs = json.loads(bloque_json.group(0))
-    except json.JSONDecodeError:
-        print('  Error al decodificar JSON de graficos.')
+    except json.JSONDecodeError as e:
+        print(f'  ⚠ Error al decodificar JSON de gráficos: {e}')
         return {}
 
-    if not isinstance(specs, list) or not specs:
-        print('  No se generaran graficos (lista vacia).')
+    if not isinstance(specs, list):
+        print('  ⚠ JSON no es una lista.')
+        return {}
+    
+    if not specs:
+        print('  ℹ No se generarán gráficos (lista vacía).')
         return {}
 
     import sys as _sys
@@ -539,7 +591,8 @@ Formato:
     from tools.generar_grafico import generar_grafico
 
     charts_dir = BASE_DIR / 'reports' / 'charts'
-    imagenes = {}
+    imagenes_por_bloque = {}
+    
     for spec in specs[:4]:
         nombre = spec.get('nombre', 'grafico')
         tipo = spec.get('tipo', 'barras_horizontales')
@@ -554,16 +607,20 @@ Formato:
         bloque_destino = spec.get('bloque_destino', '')
 
         if consulta_origen not in resultados:
-            print(f'  Saltando "{nombre}": consulta "{consulta_origen}" no encontrada.')
+            print(f'  ⚠ Saltando "{nombre}": consulta "{consulta_origen}" no encontrada.')
+            continue
+
+        if bloque_destino not in bloques_activos:
+            print(f'  ⚠ Saltando "{nombre}": bloque {bloque_destino} no está en el informe.')
             continue
 
         data_cols = resultados[consulta_origen].get('columns', [])
         data_rows = resultados[consulta_origen].get('rows', [])
         if not data_cols or not data_rows:
-            print(f'  Saltando "{nombre}": datos vacios.')
+            print(f'  ⚠ Saltando "{nombre}": datos vacíos.')
             continue
 
-        # Buscar columna_x y columna_y ignorando mayusculas/minusculas
+        # Buscar columna_x y columna_y ignorando mayúsculas/minúsculas
         col_x_real = _match_col(col_x, data_cols)
         col_y_real = _match_col(col_y, data_cols)
 
@@ -582,9 +639,10 @@ Formato:
             datos_graf.append(item)
 
         if not datos_graf:
+            print(f'  ⚠ Saltando "{nombre}": datos transformados vacíos.')
             continue
 
-        print(f'  Generando: {titulo} ({len(datos_graf)} pts)...')
+        print(f'  ✓ Generando Bloque {bloque_destino}: {titulo} ({len(datos_graf)} pts)...')
         r = generar_grafico(
             datos=datos_graf,
             tipo=tipo,
@@ -600,12 +658,19 @@ Formato:
             # Ruta relativa al proyecto para que funcione en markdown
             ruta_rel = os.path.relpath(r['path'], BASE_DIR)
             img_md = f"![{titulo}]({ruta_rel})"
-            imagenes.setdefault(bloque_destino, []).append(img_md)
-            print(f'    OK: {ruta_rel}')
+            
+            # Almacenar por bloque
+            if bloque_destino not in imagenes_por_bloque:
+                imagenes_por_bloque[bloque_destino] = []
+            imagenes_por_bloque[bloque_destino].append(img_md)
+            print(f'      ✓ OK: {ruta_rel}')
         else:
-            print(f'    Error: {r["error"]}')
+            print(f'      ✗ Error: {r["error"]}')
 
-    return imagenes
+    if imagenes_por_bloque:
+        print(f'\n✓ {sum(len(v) for v in imagenes_por_bloque.values())} gráfico(s) generado(s) para {len(imagenes_por_bloque)} bloque(s)')
+    
+    return imagenes_por_bloque
 
 
 def _match_col(col_name, real_cols):
@@ -942,13 +1007,33 @@ Inserta estas tablas markdown DEBAJO del titulo de cada bloque, como formato pri
 """
     if imagenes_por_bloque:
         prompt_redaccion += f"""
-### Graficos generados
-Inserta estos graficos como imagenes markdown DESPUES de la tabla de datos
-del bloque correspondiente (nunca antes). Cada bloque indica que graficos
-lleva.
 
-Graficos por bloque:
+### GRAFICOS GENERADOS — INSTRUCCIONES DE INSERCIÓN
+Estos gráficos DEBEN ser insertados en los bloques correspondientes.
+Formato: inserta la imagen markdown INMEDIATAMENTE DESPUÉS del título del bloque 
+y de cualquier tabla de datos, pero ANTES del texto explicativo.
+
+Gráficos por bloque (cada bloque tiene 0 o más gráficos):
 {json.dumps(imagenes_por_bloque, ensure_ascii=False, indent=2)}
+
+REGLA DE INSERCIÓN:
+1. Si el bloque tiene un gráfico asignado, inclúyelo con el formato: ![Titulo](ruta)
+2. Posición: DESPUÉS de la tabla de datos (si la hay), ANTES del texto
+3. SIEMPRE incluye un párrafo explicativo después del gráfico que describa QUÉ muestra
+4. Si la inserción de imagen falla, menciona: "No fue posible mostrar el gráfico para [bloque]"
+
+Ejemplo correcto para Bloque D:
+```
+## BLOQUE D — Análisis Geográfico
+
+| Departamento | Unidades |
+|---|---:|
+| ANTIOQUIA | 34,615 |
+
+![Departamentos lideran con Antioquia](reports/charts/..png)
+
+El gráfico anterior muestra que Antioquia domina...
+```
 """
     md_informe = llamar_llm(skill_informe_redaccion, prompt_redaccion, temperatura=0.3)
 
