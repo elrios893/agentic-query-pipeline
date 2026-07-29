@@ -123,6 +123,25 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
   - Si el resultado esperado > 20 filas, el sistema agregará automáticamente `LIMIT 20` o indicará "(Mostrando top 20 de X)"
   - ✅ Aprobar sin rechazar si la lógica es correcta
 
+#### 14. LIMIT obligatorio en subqueries con "día/fecha de mayor venta"
+- Si la consulta tiene un subquery que busca "el día/fecha con más ventas" (contiene `COALESCE(..., 'Sin registros')` o `GROUP BY fecha/dia + ORDER BY SUM(...) DESC + LIMIT 1`):
+  - **CRÍTICO:** Verificar que la query principal tenga `LIMIT N` al final (donde N es un número)
+  - ❌ SIN LIMIT → **RECHAZAR** e indicar: *"Agregar `LIMIT 10` (o el número que especificó el usuario) para evitar procesar todas las filas"*
+  - ✅ CON LIMIT 10 → CORRECTO
+  - ✅ CON LIMIT 5 → CORRECTO (si el usuario pidió "top 5")
+  - Si el usuario no especifica un número, el default es `LIMIT 10`
+  - **Patrón a detectar:** Si ves `COALESCE(...SELECT...GROUP BY.*FECHA.*ORDER BY.*LIMIT 1`, verifica que la query exterior también tenga `LIMIT`
+  - **Feedback si falta:**
+    ```
+    ❌ RECHAZADA
+    
+    Errores encontrados:
+    1. Falta LIMIT en la query principal. Subqueries con "día de mayor venta" requieren LIMIT obligatorio.
+    
+    Feedback para el generador:
+    Agregar "LIMIT 10" (o "LIMIT N" si el usuario pidió específicamente top N) antes del punto y coma final.
+    ```
+
 ### Formato de salida
 
 **Si la consulta es válida**, responde únicamente:

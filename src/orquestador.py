@@ -103,7 +103,8 @@ def _reglas_val() -> str:
 12. Alias internos de subconsultas: alias en minusculas sin caracteres especiales (ranking, rn, row_num, subconsulta) NO requieren comillas dobles. WHERE ranking = 1 es correcto. NUNCA rechazar por ausencia de comillas en alias de window functions o nombres de subquery.
 13. NO rechazar dos veces por el mismo problema. Si el generador ya corrigio un error en el intento anterior, aprobarlo aunque queden imperfecciones menores de estilo.
 14. CAST para ROUND: si la consulta usa ROUND() sobre una operacion aritmetica (division, multiplicacion), DEBE incluir CAST(...AS numeric). Si ves ROUND((... * 100) / ..., N) sin CAST → RECHAZAR. La forma correcta es ROUND(CAST((... * 100) / ... AS numeric), N).
-15. Deteccion de Cartesian product en comparaciones de periodos: si la consulta contiene FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN combinado con EXTRACT(DAY FROM ...) = EXTRACT(DAY FROM ...) u otro EXTRACT en la condicion ON → RECHAZAR. Feedback: "Para comparar periodos (enero vs febrero), NO uses JOINs. Usa UNA tabla con multiples CASE WHEN para cada periodo: SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero"."""
+15. Deteccion de Cartesian product en comparaciones de periodos: si la consulta contiene FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN combinado con EXTRACT(DAY FROM ...) = EXTRACT(DAY FROM ...) u otro EXTRACT en la condicion ON → RECHAZAR. Feedback: "Para comparar periodos (enero vs febrero), NO uses JOINs. Usa UNA tabla con multiples CASE WHEN para cada periodo: SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero".
+16. LIMIT obligatorio en subqueries con "día/fecha de mayor venta": si la consulta detecta un patrón como COALESCE(...SELECT...GROUP BY fecha...LIMIT 1), DEBE tener LIMIT N en la query principal. Sin LIMIT → RECHAZAR. Mensaje: "Falta LIMIT en la query principal. Subqueries que buscan 'día de mayor venta' requieren LIMIT obligatorio para evitar procesar todas las filas. Agregar LIMIT 10 (o el número que pidió el usuario) antes del punto y coma final"."""
 
 PATRONES_INFORME = re.compile(
     r'\b(informe|reporte|report|documento|word|docx|'
@@ -237,6 +238,48 @@ def es_intencion_tabla(texto: str) -> bool:
     )
     return bool(patrones.search(texto))
 
+def detectar_subquery_dia_mayor_venta(sql: str) -> bool:
+    """
+    Detecta si la consulta tiene subqueries para buscar 'día de mayor venta'.
+    Patrón: COALESCE(...SELECT...GROUP BY...LIMIT 1...) o similar
+    """
+    # Verificar que tenga COALESCE y SELECT (pueden estar separados por newlines/espacios)
+    tiene_coalesce = bool(re.search(r"COALESCE", sql, re.IGNORECASE))
+    tiene_select = bool(re.search(r"SELECT", sql, re.IGNORECASE))
+    
+    if tiene_coalesce and tiene_select:
+        # Verificar que tenga GROUP BY + LIMIT 1 dentro (patrón de subquery)
+        patron_group_limit = r"GROUP\s+BY.*?LIMIT\s+1"
+        tiene_group_limit = bool(re.search(patron_group_limit, sql, re.IGNORECASE | re.DOTALL))
+        return tiene_group_limit
+    
+    return False
+
+def asegurar_limit_en_subquery(sql: str, valor_default: int = 10) -> tuple[str, bool]:
+    """
+    Si la consulta detecta subquery de "día de mayor venta" SIN LIMIT en la query principal,
+    agrega LIMIT valor_default automáticamente.
+    
+    Returns:
+        (sql_corregida, fue_modificada)
+    """
+    if not detectar_subquery_dia_mayor_venta(sql):
+        return sql, False
+    
+    # Verificar si ya tiene LIMIT
+    if re.search(r'LIMIT\s+\d+\s*[;]?\s*$', sql, re.IGNORECASE):
+        # Ya tiene LIMIT, no modificar
+        return sql, False
+    
+    # Agregar LIMIT si falta
+    sql_sin_newline = sql.rstrip()
+    if sql_sin_newline.endswith(';'):
+        sql_con_limit = sql_sin_newline[:-1] + f' LIMIT {valor_default};'
+    else:
+        sql_con_limit = sql_sin_newline + f' LIMIT {valor_default};'
+    
+    return sql_con_limit, True
+
 def formatear_resultado_como_tabla(resultado: dict, limite: int = 20) -> str:
     """
     Convierte un resultado SQL en tabla markdown formateada.
@@ -368,6 +411,12 @@ def generar_sql_y_validar(pregunta: str, system_gen: str, system_val: str) -> st
     print(f'[{MODELO}] Generando consulta...')
     consulta_generada = llamar_llm(system_gen, pregunta)
     consulta_limpia = extraer_sql(consulta_generada)
+    
+    # Corregir LIMIT faltante en subqueries de "día de mayor venta"
+    consulta_limpia, fue_corregida = asegurar_limit_en_subquery(consulta_limpia, valor_default=10)
+    if fue_corregida:
+        print('ℹ LIMIT agregado automáticamente en subquery de "día de mayor venta"')
+    
     print(f'Consulta generada:\n{consulta_limpia}\n')
     print(f'SQL_LOG::consulta_principal::{consulta_limpia}')
     print('SQL_LOG_END')
@@ -392,6 +441,12 @@ Por favor, genera una nueva version corregida de la consulta SQL.
 Pregunta original del usuario: {pregunta}"""
             consulta_generada = llamar_llm(system_gen, feedback_msg, temperatura=0.2)
             consulta_limpia = extraer_sql(consulta_generada)
+            
+            # Aplicar corrección de LIMIT nuevamente
+            consulta_limpia, fue_corregida = asegurar_limit_en_subquery(consulta_limpia, valor_default=10)
+            if fue_corregida:
+                print('ℹ LIMIT agregado automáticamente en subquery de "día de mayor venta"')
+            
             print(f'Nueva consulta:\n{consulta_limpia}\n')
         else:
             print('Se agotaron los intentos de validacion.')
