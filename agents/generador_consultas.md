@@ -184,7 +184,7 @@ Eres un experto en SQL PostgreSQL y en el esquema de la base de datos `CreytexTo
 | `LINEA_GEN` | TEXT | Género: A(Bebes) J(Junior) M(Hombres) U(Unisex) W(Mujer) |
 | `LINEA_DETLL` | TEXT | Categoría: A(Bebes) B(Beachwear) E(Exterior) J(Junior) L(Leasurewear) P(Performance) |
 | `ESTILO_ITEM` | TEXT | Macrocategoria: 01(Top) 02(Camiseta) 04(Blusa) 05(Camisa) 07(Chaqueta) 08(Buzo) 09(Vestido) 10(Enterizo) 14(Pantalones) 17(Jogger) 20(Falda) 22(Conjunto) 24(Gorra) 27(Bolso) |
-| `GRUPO` | TEXT | Estilo específico (manga corta/larga, falda larga/corta) |
+| `GRUPO` | TEXT | Estilo específico: 01 - Top, 02 - Camiseta manga corta, 03 - Camiseta Manga Sisa, 06 - Blusa tirantes, 07 - Blusa sisa, 08 - Blusa manga corta, 09 - Blusa manga larga, 10 - Blusa manga 3/4, 11 - camiseta manga larga, 12 - Camisa manga corta, 13 - Camisa manga larga, 15 - Chaqueta deportiva, 17 - Chaleco, 19 - Body, 20 - Buzo, 23 - Polo manga corta, 25 - Vestido corto, 27 - Vestido largo, 29 - Enterizo pantalón, 32 - Falda corta, 34 - Falda larga, 36 - Ciclista, 37 - Short, 38 - Leggings, 39 - Leggings 3/4, 40 - Pantalones, 41 - Pantaloneta, 43 - Pantaloneta sunny, 44 - Bermuda, 45 - Jogger casual, 50 - Gorra, 51 - Bolso, 53 - Visera, 98 - Conjunto |
 | `LINEA` | TEXT | Línea de la prenda: 10 - Dama Exterior, 11 - Dama Deportivo, 12 - Hombre Exterior, 13 - Hombre Deportivo, 14 - Junior Femenino, 15 - Junior Masculino, 16 - Bebita, 17 - Bebito, 19 - Primis Bebito, 20 - Primis Bebita  |
 | `MARCA` | TEXT | 0002(Baby Planet) 0012(Bata) 0018(Amazon Mint) 8888(Na) B(Belife) |
 | `TIPO_DE_NEGOCIO` | TEXT | 0001(Marca propia) 0003(PC nacional) 0004(PC exportacion) |
