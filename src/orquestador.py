@@ -544,18 +544,30 @@ def generar_graficos_informe(resultados, pregunta, plan, timestamp):
             }
 
     # Construir información del mapeo oficial
-    mapeo_info = "### Mapeo oficial de bloques → tipos de gráficos\n"
+    mapeo_info = "### Mapeo oficial de bloques → tipos de gráficos y consultas esperadas\n"
     bloques_activos = plan.get('bloques', [])
+    
+    # Construir descripción de cada bloque con su propósito y tipo de gráfico
+    bloque_descripciones = {
+        'A': 'Encabezado - NO requiere gráfico',
+        'B': 'Resumen ejecutivo - NO requiere gráfico',
+        'C': 'Métricas principales / Comparación períodos - Espera: barras_agrupadas',
+        'D': 'Análisis geográfico (departamentos/ciudades) - Espera: barras_horizontales o torta',
+        'E': 'Dependencias/Cadenas - Espera: barras_horizontales',
+        'F': 'Tiendas - Espera: barras_horizontales',
+        'G': 'Línea de producto - Espera: barras_verticales o barras_horizontales',
+        'H': 'Producto/Descripción - Espera: barras_verticales',
+        'I': 'Referencias - Espera: barras_horizontales',
+        'J': 'Tallas - Espera: barras_verticales',
+        'K': 'Evolución temporal - Espera: linea',
+        'L': 'Estado de tiendas - Espera: barras_verticales',
+        'M': 'Alertas - NO requiere gráfico',
+        'N': 'Anexo de datos - NO requiere gráfico',
+    }
+    
     for bloque in bloques_activos:
-        tipo_esperado = MAPEO_BLOQUES_GRAFICOS.get(bloque)
-        if tipo_esperado:
-            if isinstance(tipo_esperado, list):
-                tipo_str = " o ".join(tipo_esperado)
-            else:
-                tipo_str = tipo_esperado
-            mapeo_info += f"- Bloque {bloque}: espera gráfico tipo `{tipo_str}`\n"
-        else:
-            mapeo_info += f"- Bloque {bloque}: NO requiere gráfico\n"
+        desc = bloque_descripciones.get(bloque, 'Desconocido')
+        mapeo_info += f"- Bloque {bloque}: {desc}\n"
 
     prompt = f"""Resumen de datos disponibles (columnas exactas):
 {json.dumps(resumen_columnas, ensure_ascii=False, indent=2)}
@@ -565,6 +577,15 @@ Bloques del informe: {bloques_activos}
 {mapeo_info}
 
 Pregunta del usuario: "{pregunta}"
+
+INSTRUCCIONES CRÍTICAS:
+1. Genera SOLO gráficos para consultas cuyo contenido CORRESPONDA al bloque destino
+2. NO generes gráficos que muestren datos FUERA DE CONTEXTO del bloque
+   - Ej: NO pongas gráfico de LINEA en bloque D (Geográfico)
+   - Ej: NO pongas gráfico de DEPARTAMENTOS en bloque I (Referencias)
+3. Vincula explícitamente cada gráfico con su consulta y bloque correcto
+4. Si una consulta no casa con ningún bloque, NO generes gráfico para ella
+5. Si la información ya está completamente mostrada en tabla, considera si el gráfico aporta valor
 
 Decide qué gráficos generar (máximo 1 por bloque, máximo 4 en total).
 Responde SOLO con un JSON válido (incluso si es lista vacía).
@@ -589,8 +610,9 @@ REGLA CRÍTICA - SELECCIÓN DE TIPO DE GRÁFICO:
 REGLA PRIORITARIA - MAPEO DE BLOQUES:
 Antes de generar un gráfico, verifica que:
 1. El bloque_destino está en {bloques_activos}
-2. El tipo de gráfico coincide con MAPEO_BLOQUES_GRAFICOS
+2. El tipo de gráfico coincide con el esperado para ese bloque
 3. Si el mapeo dice "NO requiere gráfico", NO generes uno para ese bloque
+4. La consulta_origen tiene sentido para el bloque_destino
 
 Tipos de gráficos disponibles:
 {skill_graficos}
@@ -612,7 +634,7 @@ Formato esperado:
   }}
 ]
 
-- "bloque_destino": letra del bloque donde irá insertada la imagen (D, E, F, G, H, I, J, K, L)
+- "bloque_destino": letra del bloque donde irá insertada la imagen (debe estar en {bloques_activos})
 - "columna_serie": nombre de columna para series (barras_agrupadas) o null
 - "formato_y": "moneda" | "unidades" | "porcentaje"
 - Si no hay gráficos que valgan la pena, responde: []
@@ -668,6 +690,23 @@ Formato esperado:
         if bloque_destino not in bloques_activos:
             print(f'  ⚠ Saltando "{nombre}": bloque {bloque_destino} no está en el informe.')
             continue
+        
+        # VALIDACIÓN CRÍTICA: verificar que el tipo de gráfico sea válido para el bloque
+        tipos_permitidos = MAPEO_BLOQUES_GRAFICOS.get(bloque_destino)
+        if tipos_permitidos is None:
+            print(f'  ⚠ Saltando "{nombre}": Bloque {bloque_destino} NO requiere gráfico.')
+            continue
+        
+        # Si tipos_permitidos es una lista, verificar que tipo esté en la lista
+        if isinstance(tipos_permitidos, list):
+            if tipo not in tipos_permitidos:
+                print(f'  ⚠ Saltando "{nombre}": tipo "{tipo}" NO permitido para bloque {bloque_destino}. Permitidos: {tipos_permitidos}')
+                continue
+        else:
+            # Si es un string, debe coincidir exactamente
+            if tipo != tipos_permitidos:
+                print(f'  ⚠ Saltando "{nombre}": tipo "{tipo}" NO coincide con tipo esperado "{tipos_permitidos}" para bloque {bloque_destino}.')
+                continue
 
         data_cols = resultados[consulta_origen].get('columns', [])
         data_rows = resultados[consulta_origen].get('rows', [])
