@@ -680,18 +680,44 @@ Formato esperado:
         col_y_real = _match_col(col_y, data_cols)
 
         datos_graf = []
-        for row in data_rows:
-            row_dict = dict(zip(data_cols, row))
-            item = {
-                'x': str(row_dict.get(col_x_real or col_x, '')),
-                'y': float(row_dict.get(col_y_real or col_y, 0) or 0),
-            }
-            if col_serie:
-                col_s_real = _match_col(col_serie, data_cols)
-                val_serie = row_dict.get(col_s_real or col_serie)
-                if val_serie:
-                    item['serie'] = str(val_serie)
-            datos_graf.append(item)
+        
+        # CASO ESPECIAL: barras_agrupadas transforma datos
+        if tipo == 'barras_agrupadas' and col_serie:
+            # Para barras agrupadas, necesitamos crear 2 puntos de datos por fila:
+            # Uno para col_y (serie 1) y otro para col_serie (serie 2)
+            col_s_real = _match_col(col_serie, data_cols)
+            for row in data_rows:
+                row_dict = dict(zip(data_cols, row))
+                x_val = str(row_dict.get(col_x_real or col_x, ''))
+                y_val = float(row_dict.get(col_y_real or col_y, 0) or 0)
+                serie_val = float(row_dict.get(col_s_real or col_serie, 0) or 0)
+                
+                # Punto 1: col_y con su nombre como serie
+                datos_graf.append({
+                    'x': x_val,
+                    'y': y_val,
+                    'serie': col_y_real or col_y  # Nombre de la columna como label de serie
+                })
+                # Punto 2: col_serie con su nombre como serie
+                datos_graf.append({
+                    'x': x_val,
+                    'y': serie_val,
+                    'serie': col_s_real or col_serie  # Nombre de la columna como label de serie
+                })
+        else:
+            # CASO NORMAL: una fila = un punto
+            for row in data_rows:
+                row_dict = dict(zip(data_cols, row))
+                item = {
+                    'x': str(row_dict.get(col_x_real or col_x, '')),
+                    'y': float(row_dict.get(col_y_real or col_y, 0) or 0),
+                }
+                if col_serie:
+                    col_s_real = _match_col(col_serie, data_cols)
+                    val_serie = row_dict.get(col_s_real or col_serie)
+                    if val_serie:
+                        item['serie'] = str(val_serie)
+                datos_graf.append(item)
 
         if not datos_graf:
             print(f'  ⚠ Saltando "{nombre}": datos transformados vacíos.')
@@ -774,12 +800,18 @@ Decide si tiene sentido generar un grafico con estos datos.
   responde: []
 - Si tiene sentido, genera hasta 1 grafico.
 
-REGLA CRITICA DE TIPO:
-- Si la columna_x contiene fechas, dias, semanas o meses (nombre de columna: Fecha, dia, fecha,
-  semana, mes, periodo, o valores con formato de fecha), el tipo DEBE ser "linea" obligatoriamente.
-  NUNCA usar "barras_verticales" ni "barras_horizontales" cuando el eje X es temporal.
-- Usar "barras_horizontales" o "barras_verticales" solo cuando el eje X son categorias
-  (departamentos, tiendas, tallas, referencias, lineas de producto, etc.).
+REGLA CRÍTICA DE TIPO Y SERIE:
+- Si la pregunta contiene palabras como "compara", "versus", "vs", "diferencia"
+  Y los datos tienen múltiples columnas numéricas (ej: Ventas_Enero, Ventas_Febrero):
+  ENTONCES tipo = "barras_agrupadas" y columna_serie = nombre de la serie (ej: "Ventas_Enero")
+  Esto crea barras lado-a-lado para comparar valores entre series.
+  
+- Si la columna_x contiene fechas, días, semanas o meses (nombre: Fecha, dia, fecha_mvto, etc.)
+  Y NO es comparación de múltiples series:
+  ENTONCES tipo = "linea" y columna_serie = null
+  
+- Si columna_x son categorías (departamentos, tiendas, tallas, referencias):
+  ENTONCES tipo = "barras_horizontales" o "barras_verticales" y columna_serie = null
 
 Disponible la siguiente guia de tipos de graficos:
 {skill_graficos}
@@ -801,6 +833,7 @@ Responde SOLO con un JSON valido con este formato:
 ]
 
 - "columna_x" y "columna_y" deben ser nombres exactos de columna visibles en "columnas".
+- "columna_serie": nombre de otra columna numérica (para barras_agrupadas) o null
 - "formato_y": "moneda" | "unidades" | "porcentaje".
 - Si no hay graficos que valgan la pena, responde: []
 """
@@ -835,6 +868,7 @@ Responde SOLO con un JSON valido con este formato:
         formato_y = spec.get('formato_y', 'unidades')
         col_x = spec.get('columna_x', '')
         col_y = spec.get('columna_y', '')
+        col_serie = spec.get('columna_serie')
 
         data_cols = cols
         data_rows = rows
@@ -843,15 +877,45 @@ Responde SOLO con un JSON valido con este formato:
         col_y_real = _match_col(col_y, data_cols)
 
         datos_graf = []
-        for row in data_rows:
-            row_dict = dict(zip(data_cols, row))
-            y_val = row_dict.get(col_y_real or col_y, 0)
-            if y_val is None:
-                y_val = 0
-            datos_graf.append({
-                'x': str(row_dict.get(col_x_real or col_x, '')),
-                'y': float(y_val),
-            })
+        
+        # CASO ESPECIAL: barras_agrupadas transforma datos
+        if tipo == 'barras_agrupadas' and col_serie:
+            # Para barras agrupadas, necesitamos crear 2 puntos de datos por fila:
+            # Uno para col_y (serie 1) y otro para col_serie (serie 2)
+            col_s_real = _match_col(col_serie, data_cols)
+            for row in data_rows:
+                row_dict = dict(zip(data_cols, row))
+                x_val = str(row_dict.get(col_x_real or col_x, ''))
+                y_val = float(row_dict.get(col_y_real or col_y, 0) or 0)
+                serie_val = float(row_dict.get(col_s_real or col_serie, 0) or 0)
+                
+                # Punto 1: col_y con su nombre como serie
+                datos_graf.append({
+                    'x': x_val,
+                    'y': y_val,
+                    'serie': col_y_real or col_y  # Nombre de la columna como label de serie
+                })
+                # Punto 2: col_serie con su nombre como serie
+                datos_graf.append({
+                    'x': x_val,
+                    'y': serie_val,
+                    'serie': col_s_real or col_serie  # Nombre de la columna como label de serie
+                })
+        else:
+            # CASO NORMAL: una fila = un punto
+            for row in data_rows:
+                row_dict = dict(zip(data_cols, row))
+                item = {
+                    'x': str(row_dict.get(col_x_real or col_x, '')),
+                    'y': float(row_dict.get(col_y_real or col_y, 0) or 0),
+                }
+                # Agregar serie si está especificada (para barras_agrupadas)
+                if col_serie:
+                    col_s_real = _match_col(col_serie, data_cols)
+                    val_serie = row_dict.get(col_s_real or col_serie)
+                    if val_serie:
+                        item['serie'] = str(val_serie)
+                datos_graf.append(item)
 
         if not datos_graf:
             continue
