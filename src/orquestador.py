@@ -413,6 +413,36 @@ def extraer_sql(texto: str) -> str:
         sql += ';'
     return sql
 
+def formatear_sql_para_impresion(sql: str) -> str:
+    """
+    Formatea SQL para impresión: agrega saltos de línea en puntos lógicos.
+    Mejora legibilidad en consola.
+    """
+    # Keywords que deben ir en nueva línea (si no lo están ya)
+    keywords = [
+        'SELECT', 'FROM', 'WHERE', 'GROUP BY', 'HAVING', 'ORDER BY',
+        'LIMIT', 'JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'FULL OUTER JOIN',
+        'INNER JOIN', 'CROSS JOIN', 'CASE', 'WHEN', 'THEN', 'ELSE', 'END',
+        'UNION', 'UNION ALL', 'EXCEPT', 'INTERSECT',
+    ]
+    
+    sql_formateado = sql
+    
+    # Agregar salto de línea ANTES de cada keyword (si no lo tiene)
+    for kw in keywords:
+        # Patrón: cualquier carácter ANTES del keyword, pero no otro palabra
+        patron = r'([^ \n])(\s+)(' + re.escape(kw) + r')(\s+)'
+        reemplazo = r'\1\n\3 '
+        sql_formateado = re.sub(patron, reemplazo, sql_formateado, flags=re.IGNORECASE)
+    
+    # Agregar salto de línea DESPUÉS de comas en SELECT (pero mantener indentación)
+    sql_formateado = re.sub(r',(\s+)', ',\n  ', sql_formateado)
+    
+    # Limpiar múltiples saltos de línea
+    sql_formateado = re.sub(r'\n\s*\n+', '\n', sql_formateado)
+    
+    return sql_formateado.strip()
+
 def ejecutar_consulta(sql: str, limite: int = 1000) -> dict:
     script = TOOLS_DIR / 'consultar_db.py'
     env = os.environ.copy()
@@ -431,6 +461,10 @@ def ejecutar_consulta(sql: str, limite: int = 1000) -> dict:
 def generar_sql_y_validar(pregunta: str, system_gen: str, system_val: str) -> str:
     print(f'[{MODELO}] Generando consulta...')
     consulta_generada = llamar_llm(system_gen, pregunta)
+    
+    # LIMPIEZA: remover ruido de logs que el LLM puede incluir
+    consulta_generada = consulta_generada.replace('SQL_LOG_END', '').replace('SQL_LOG::', '')
+    
     consulta_limpia = extraer_sql(consulta_generada)
     
     # Corregir LIMIT faltante en subqueries de "día de mayor venta"
@@ -438,7 +472,10 @@ def generar_sql_y_validar(pregunta: str, system_gen: str, system_val: str) -> st
     if fue_corregida:
         print('ℹ LIMIT agregado automáticamente en subquery de "día de mayor venta"')
     
-    print(f'Consulta generada:\n{consulta_limpia}\n')
+    # Formatear SQL para impresión (saltos de línea)
+    consulta_formateada = formatear_sql_para_impresion(consulta_limpia)
+    
+    print(f'Consulta generada:\n{consulta_formateada}\n')
     print(f'SQL_LOG::consulta_principal::{consulta_limpia}')
     print('SQL_LOG_END')
 
@@ -461,6 +498,10 @@ Por favor, genera una nueva version corregida de la consulta SQL.
 
 Pregunta original del usuario: {pregunta}"""
             consulta_generada = llamar_llm(system_gen, feedback_msg, temperatura=0.2)
+            
+            # LIMPIEZA: remover ruido
+            consulta_generada = consulta_generada.replace('SQL_LOG_END', '').replace('SQL_LOG::', '')
+            
             consulta_limpia = extraer_sql(consulta_generada)
             
             # Aplicar corrección de LIMIT nuevamente
@@ -468,7 +509,9 @@ Pregunta original del usuario: {pregunta}"""
             if fue_corregida:
                 print('ℹ LIMIT agregado automáticamente en subquery de "día de mayor venta"')
             
-            print(f'Nueva consulta:\n{consulta_limpia}\n')
+            # Formatear para impresión
+            consulta_formateada = formatear_sql_para_impresion(consulta_limpia)
+            print(f'Nueva consulta:\n{consulta_formateada}\n')
         else:
             print('Se agotaron los intentos de validacion.')
             sys.exit(1)
@@ -526,10 +569,22 @@ Pregunta del usuario: "{pregunta}"
 Decide qué gráficos generar (máximo 1 por bloque, máximo 4 en total).
 Responde SOLO con un JSON válido (incluso si es lista vacía).
 
-REGLA CRÍTICA - EJE TEMPORAL:
-Si la columna_x tiene fechas, días, semanas o meses (nombres: Fecha, dia, fecha,
-semana, mes, período, fecha_mvto, etc.), el tipo DEBE ser "linea" obligatoriamente.
-NUNCA usar "barras_verticales" ni "barras_horizontales" cuando el eje X es temporal.
+REGLA CRÍTICA - SELECCIÓN DE TIPO DE GRÁFICO:
+
+**1. Comparación de Períodos Múltiples (MÁXIMA PRIORIDAD):**
+   - Si la SQL contiene "CASE WHEN" con BETWEEN para múltiples períodos (enero, febrero, etc.)
+   - O la pregunta dice "compara", "versus", "vs", "diferencia entre"
+   - ENTONCES: tipo = "barras_agrupadas" (NUNCA "linea" aunque eje X sea temporal)
+   - Las barras_agrupadas muestran lado-a-lado (ej: enero/febrero para cada día)
+
+**2. Eje X Temporal (SIN comparación de períodos):**
+   - Si columna_x tiene fechas, días, semanas o meses (Fecha, dia, fecha_mvto, etc.)
+   - Y NO es comparación de múltiples períodos
+   - ENTONCES: tipo = "linea"
+
+**3. Ranking o Distribución Categórica:**
+   - Si eje X son categorías (departamentos, tiendas, tallas, referencias)
+   - ENTONCES: tipo = "barras_horizontales" (ranking) o "barras_verticales" (distribución)
 
 REGLA PRIORITARIA - MAPEO DE BLOQUES:
 Antes de generar un gráfico, verifica que:
@@ -968,6 +1023,11 @@ Responde con un JSON con esta estructura exacta:
     # ------------------------------------------------------------------
     print(f'\n[{MODELO}] Redactando informe...')
     
+    # OPTIMIZACION: delay antes de FASE 4 para respetar rate limits
+    import time
+    print('  ⏳ Esperando antes de redacción (respetar rate limits)...')
+    time.sleep(2)
+    
     # Formatear resultados como tablas si es necesario
     tablas_markdown = {}
     for nombre, res in resultados.items():
@@ -976,33 +1036,65 @@ Responde con un JSON con esta estructura exacta:
             if tabla:
                 tablas_markdown[nombre] = tabla
     
+    # OPTIMIZACION: Extraer solo instrucciones de bloques en lugar de skill completo
+    # Esto reduce tokens de ~10K a ~2K
+    bloques_instructions = extraer_seccion_skill('informe_ventas', 'BLOQUE')
+    
     prompt_redaccion = f"""El usuario solicito:
 "{pregunta}"
 
-Usa la siguiente skill para redactar el informe en Markdown:
-{skill_informe_redaccion}
+Genera un informe profesional en Markdown usando SOLO los bloques seleccionados.
 
-Bloques seleccionados para este informe: {plan.get('bloques', [])}
+Bloques a incluir: {plan.get('bloques', [])}
 
-Datos obtenidos de la base de datos:
-{json.dumps(resultados, ensure_ascii=False, indent=2)}
+Referencia de estructura de bloques:
+{bloques_instructions}
 
-Fecha de generacion: {datetime.now().strftime('%d/%m/%Y')}
+Datos obtenidos (resumido):
+- Consultas ejecutadas: {', '.join(resultados.keys())}
+- Fecha: {datetime.now().strftime('%d/%m/%Y')}
 
-Instrucciones:
-- Construye el informe usando SOLO los bloques seleccionados, en el orden logico.
-- Adapta el titulo y el contenido a lo que el usuario pidio exactamente.
-- Usa unicamente los datos proporcionados. No inventes cifras.
-- Formatea numeros con separador de miles y moneda COP donde corresponda.
-- Si un bloque necesita un dato que no esta disponible, omite ese bloque o indica "Sin informacion".
+REGLAS CRÍTICAS DE REDACCIÓN:
+
+1. **NUNCA incluyas nombres de bloques en el texto.** No escribas "BLOQUE C" o "BLOQUE D".
+   - Los títulos deben ser descriptivos: "Métricas Principales", "Análisis Geográfico", etc.
+   - Solo incluye el título en formato ## (Markdown H2)
+
+2. **FORMATO DE TABLAS - BLOQUE C (Métricas Principales)**
+   - OBLIGATORIO usar tabla con 3 columnas: Métrica | Valor | Nota
+   - NUNCA separes las métricas en párrafos
+   - Incluye: Unidades totales, Valor total, Línea top, Referencia top, Talla top
+   - Formato numérico: separadores de miles, COP donde aplique
+   - EJEMPLO CORRECTO:
+   ```
+   ## Métricas Principales
+   
+   | Métrica | Valor | Nota |
+   |---------|-------|------|
+   | Unidades vendidas totales | 8,420 | |
+   | Valor total de ventas | $126,300,000 | |
+   | Línea más vendida | Dama Exterior | 2,150 unidades |
+   | Referencia top | [Ref.] | [cantidad] |
+   | Talla más vendida | [Talla] | [cantidad] |
+   ```
+
+3. **Estructura general:**
+   - Construye SOLO los bloques seleccionados en orden lógico
+   - Adapta títulos y contenido a la pregunta exacta del usuario
+   - Si un bloque no tiene datos, omítelo o indica "Sin información"
+   - Sé conciso: máximo 2-3 párrafos por sección (excepto tablas)
+
+4. **Números y formato:**
+   - Separador de miles: 54,616 o $54,616 COP
+   - Porcentajes: 1 decimal (23.5%)
+   - Unidades: sin símbolo $ (8,420 unidades)
 """
     
     if tablas_markdown:
         prompt_redaccion += f"""
 
-### Tablas de Resultados para cada bloque
-Inserta estas tablas markdown DEBAJO del titulo de cada bloque, como formato principal de presentacion de datos:
-
+### Tablas de Resultados
+Inserta estas tablas markdown DEBAJO del título de cada bloque:
 {json.dumps(tablas_markdown, ensure_ascii=False, indent=2)}
 """
     if imagenes_por_bloque:

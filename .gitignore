@@ -16,6 +16,10 @@ notas/
 # --- Generated reports ---
 reports/
 
+# --- Analysis/reference documents (temp) ---
+md_texts/
+prompts/
+
 # --- Notebooks ---
 *.ipynb
 

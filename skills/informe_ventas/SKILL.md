@@ -169,7 +169,7 @@ Cada bullet debe ser una conclusion, no un dato crudo.
 | Metrica | Valor | Nota |
 |---------|-------|------|
 | Unidades vendidas totales | 8,420 | |
-| Valor total de ventas | $126,300,000 | | 
+| Valor total de ventas | $126,300,000 | |
 | Linea mas vendida | [LINEA] | [unidades o valor] |
 | Referencia top | [REFERENCIA] | [unidades o valor] |
 | Talla mas vendida | [TALLA] | [unidades] |
