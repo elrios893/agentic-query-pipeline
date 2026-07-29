@@ -289,17 +289,17 @@ Identificar siempre el producto de mayor rotacion y el de menor.
 
 **Formato:**
 
-| Referencia | Grupo | Unidades | Valor COP |
-|---|---|---:|---:|
+| Referencia | Línea | Grupo | Unidades | Valor COP |
+|---|---|---|---:|---:|
 
 #### I.1 Venta de la referencia TOP por zona
 
 Tomar la referencia con mayor venta total y mostrar su distribucion geografica:
 
-| Zona | Referencia | Grupo | Unidades | Valor COP |
-|---|---|---|---:|---:|
+| Zona | Referencia | Línea | Grupo | Unidades | Valor COP |
+|---|---|---|---|---:|---:|
 
-**Datos necesarios:** `GROUP BY TRIM("REFERENCIA"), TRIM("GRUPO")` + subconsulta por zona para la top.
+**Datos necesarios:** `GROUP BY TRIM("REFERENCIA"), TRIM("LINEA"), TRIM("GRUPO")` + subconsulta por zona para la top.
 
 ---
 
