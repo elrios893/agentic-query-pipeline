@@ -16,6 +16,9 @@ notas/
 # --- Generated reports ---
 reports/
 
+# --- Generated Excel sheets ---
+excel_sheets/
+
 # --- Analysis/reference documents (temp) ---
 md_texts/
 prompts/

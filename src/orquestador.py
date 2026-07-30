@@ -119,11 +119,21 @@ PATRONES_GRAFICO = re.compile(
     re.IGNORECASE
 )
 
+PATRONES_EXCEL = re.compile(
+    r'(excel|\.xlsx?|exporta\w*\s*(?:a\s*)?excel|'
+    r'descargar\s*(?:como|en|a)?\s*excel|'
+    r'hoja\s*de\s*calculo|p.s[a-z]*\s*(?:lo|me|a)\s*excel)',
+    re.IGNORECASE
+)
+
 def es_intencion_informe(texto: str) -> bool:
     return bool(PATRONES_INFORME.search(texto))
 
 def es_intencion_grafico(texto: str) -> bool:
     return bool(PATRONES_GRAFICO.search(texto))
+
+def es_intencion_excel(texto: str) -> bool:
+    return bool(PATRONES_EXCEL.search(texto))
 
 # ---------------------------------------------------------------------------
 # Mapeo oficial: Bloque Informe → Tipo(s) de Gráfico Esperado(s)
@@ -202,6 +212,55 @@ def leer_skill_bloques_resumen(nombre: str) -> str:
         if in_reglas and linea.startswith('## ') and '## Reglas de negocio' not in linea:
             break
     return '\n'.join(reglas) + '\n\n## Bloques disponibles\n\n' + '\n\n'.join(bloques)
+
+EXCEL_SHEETS_DIR = BASE_DIR / 'excel_sheets'
+
+def exportar_excel_desde_resultado(resultado: dict, pregunta: str) -> str:
+    """
+    Exporta el resultado de una consulta a un archivo .xlsx.
+    Retorna la ruta del archivo o string vacio si falla.
+    """
+    cols = resultado.get('columns', [])
+    rows = resultado.get('rows', [])
+    if not cols or not rows:
+        return ''
+
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    slug = re.sub(r'[^a-z0-9]+', '_', pregunta.lower())[:40].strip('_')
+    if not slug:
+        slug = 'datos'
+    nombre = f'{slug}_{ts}.xlsx'
+    ruta = str(EXCEL_SHEETS_DIR / nombre)
+
+    import json as _json
+    payload = _json.dumps({
+        'headers': cols,
+        'rows': rows,
+        'output_path': ruta,
+        'sheet_name': 'Resultados',
+        'title': pregunta[:60],
+    })
+
+    script = TOOLS_DIR / 'generar_excel.py'
+    env = os.environ.copy()
+    env['EXCEL_DATA'] = payload
+    env['PYTHONIOENCODING'] = 'utf-8'
+    try:
+        proc = subprocess.run(
+            ['python', str(script)],
+            capture_output=True, text=True, env=env, timeout=60, encoding='utf-8'
+        )
+        out = _json.loads(proc.stdout)
+        if out.get('success'):
+            print(f'Excel generado: {ruta}')
+            return ruta
+        else:
+            print(f'Error al generar Excel: {out.get("error")}')
+            return ''
+    except Exception as e:
+        print(f'Error al generar Excel: {e}')
+        return ''
+
 
 def limpiar_texto(texto: str) -> str:
     return ''.join(c for c in texto if unicodedata.category(c) != 'So').strip()
@@ -1302,12 +1361,22 @@ def procesar_consulta(pregunta: str):
     if es_intencion_tabla(pregunta) and resultado.get('rows'):
         tabla_markdown = formatear_resultado_como_tabla(resultado)
 
+    # ------------------------------------------------------------------
+    # Exportar a Excel si el usuario lo pide
+    # ------------------------------------------------------------------
+    ruta_excel = ''
+    if es_intencion_excel(pregunta) and resultado.get('rows'):
+        print(f'[{MODELO}] Exportando a Excel...')
+        ruta_excel = exportar_excel_desde_resultado(resultado, pregunta)
+
     print(f'[{MODELO}] Redactando respuesta...')
     prompt_red = json.dumps(resultado, ensure_ascii=False, indent=2)
     if tabla_markdown:
         prompt_red += '\n\n### Tabla de Resultados\n' + tabla_markdown + '\n\nPor favor, incluir esta tabla en la respuesta.'
     if imagenes_chat:
         prompt_red += '\n\n### Grafico generado\n' + '\n'.join(imagenes_chat) + '\n\nSi hay un grafico, incluirlo en la respuesta como imagen markdown.'
+    if ruta_excel:
+        prompt_red += f'\n\n### Archivo Excel generado\nEl archivo Excel se ha guardado en: {ruta_excel}\nInformar al usuario que puede descargarlo desde esa ruta.'
     respuesta_final = llamar_llm(
         system_red,
         prompt_red,

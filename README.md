@@ -67,10 +67,12 @@ Pregunta del usuario
 ├── tools/
 │   ├── consultar_db.py        ← Ejecutor SQL solo lectura (salida JSON)
 │   ├── generar_docx.py        ← Markdown → .docx con formato profesional
+│   ├── generar_excel.py       ← Datos tabulares → .xlsx con formato profesional
 │   └── generar_grafico.py     ← Gráficos PNG con matplotlib (tamaño dinámico)
 │
 ├── skills/
 │   ├── consultar_skill/       ← Skill de consulta (esquema, reglas SQL)
+│   ├── excel_skill/           ← Skill de exportación a Excel
 │   ├── informe_ventas/        ← Skill de informes (bloques A–N, macro→micro)
 │   └── graficos_ventas/       ← Skill de decisión de gráficos
 │
@@ -81,6 +83,7 @@ Pregunta del usuario
 │
 ├── prompts/                   ← Logs diarios de uso y feedback (gitignored)
 ├── reports/                   ← Informes .docx y gráficos .png (gitignored)
+├── excel_sheets/              ← Archivos .xlsx exportados (gitignored)
 ├── data_samples/              ← Archivos TXT fuente (gitignored)
 ├── requirements.txt
 ├── .env.example               ← Template de variables de entorno
@@ -191,7 +194,28 @@ El archivo fuente se configura con la variable `DATA_FILE_PATH` en `.env`, que a
 
 ---
 
-## Gráficos
+## Exportación a Excel
+
+El sistema puede exportar cualquier resultado tabular a un archivo `.xlsx` con formato profesional usando la tool `tools/generar_excel.py`.
+
+### Activación
+
+El usuario solicita la exportación mencionando palabras clave como "excel", "xlsx", "exportar", "hoja de cálculo", "descargar como excel".
+
+### Formato del Excel generado
+
+| Elemento | Estilo |
+|----------|--------|
+| **Título** (opcional) | Fila fusionada, fondo azul oscuro, texto blanco bold 14pt |
+| **Headers** | Fondo `#1F4E79`, texto blanco bold, centrado |
+| **Filas alternadas** | Pares con fondo azul claro `#D6E4F0` |
+| **Números** | Separador de miles (`#,##0`), alineación derecha |
+| **Ancho de columna** | Autoajuste (máx 40 caracteres) o personalizado |
+| **Bordes** | Líneas finas color gris en toda la tabla |
+
+Los archivos se guardan en `excel_sheets/` con nombre descriptivo + timestamp.
+
+---
 
 El motor de gráficos (`tools/generar_grafico.py`) soporta 5 tipos:
 
@@ -277,6 +301,7 @@ Un archivo por día. Los archivos JSON están en `.gitignore` — son datos de u
 psycopg2-binary>=2.9
 python-dotenv>=1.0
 python-docx>=1.1
+openpyxl>=3.1
 matplotlib>=3.8
 numpy>=1.26
 pandas>=2.1
