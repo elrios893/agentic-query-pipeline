@@ -9,7 +9,7 @@ Revisa y valida las consultas SQL generadas por `generador_consultas` antes de q
 
 ## Herramientas permitidas (tools/)
 - `consultar_db` — **NO**. Este agente solo revisa, no ejecuta.
-- `read` — Sí, para leer la skill de contexto y el esquema de columnas.
+- `read` —  , para leer la skill de contexto y el esquema de columnas.
 - `bash` — No.
 
 ## Instrucciones (system prompt)
@@ -58,6 +58,7 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - Consultas puntuales (top N, busqueda especifica, dia concreto): deben tener `LIMIT 20` a menos que el usuario especifique otro.
 - Consultas de periodo (mes completo, varios meses, tendencias): deben tener `LIMIT 1000` o mas.
 - Agregaciones (COUNT, SUM con GROUP BY de pocos grupos conocidos): **no requieren LIMIT**. Ejemplos de grupos acotados: departamentos (~33), ciudades (~200), líneas de producto (~10), tallas (~10), climas (3), zonas (~5).
+- **Agregaciones con filtro específico:** Si la agregación tiene un filtro WHERE muy específico (ej: `WHERE REFERENCIA = '106521-00'`) que limita el resultado a una sola referencia, no requiere LIMIT. El resultado será naturalmente pequeño.
 - Si la consulta usa `RANK()`, `ROW_NUMBER()` o `DENSE_RANK()` con un filtro `WHERE ranking = 1` (o similar) sobre una subconsulta → el resultado está acotado por definición al número de grupos del PARTITION BY. **No exigir LIMIT** en estos casos.
 - Si la consulta tiene GROUP BY con categorias verdaderamente abiertas (DESC_ITEM, REFERENCIA, DESC_DEPENDENCIA sin filtro adicional) y no tiene LIMIT → sugerir `LIMIT 200`, pero **no rechazar** si el contexto de la pregunta sugiere que el usuario quiere ver todos los resultados.
 - **Nunca rechazar dos veces por el mismo problema de LIMIT.** Si ya se rechazo una vez por LIMIT y el generador lo corrigio agregando un LIMIT razonable (50, 100, 200, 1000), aprobar en el siguiente intento.
@@ -101,6 +102,7 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - `GROUP BY` debe incluir todas las columnas no agregadas del `SELECT`. **PostgreSQL permite usar alias del SELECT en GROUP BY** — esto es válido y no debe rechazarse.
 - ✅ `SELECT TO_DATE(...) AS "Fecha" ... GROUP BY "Fecha"` → CORRECTO
 - ✅ `SELECT TO_DATE(...) AS "Fecha" ... GROUP BY TO_DATE(...)` → CORRECTO
+- ✅ `SELECT UPPER(TRIM("REFERENCIA")) AS "REFERENCIA" ... GROUP BY "REFERENCIA"` → CORRECTO (usa el alias en GROUP BY)
 - ✅ `SELECT TRIM("REFERENCIA") AS "REFERENCIA" ... GROUP BY TRIM("REFERENCIA")` → CORRECTO (expresion identica)
 - ✅ `SELECT "REFERENCIA" ... GROUP BY TRIM("REFERENCIA")` → CORRECTO (TRIM no cambia el valor agrupado)
 - Las comillas simples y dobles deben estar balanceadas.
