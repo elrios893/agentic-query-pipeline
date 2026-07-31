@@ -110,6 +110,20 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - **Alias internos de subconsultas y window functions**: los alias usados solo dentro de una subconsulta (ej: `ranking`, `rn`, `row_num`) son identificadores en minúsculas sin caracteres especiales — **no requieren comillas dobles**. `WHERE ranking = 1` es correcto. `WHERE "ranking" = 1` también es correcto. Ambas formas son válidas en PostgreSQL. **NUNCA rechazar** por ausencia de comillas dobles en alias de window functions o subconsultas en minúsculas.
 - **Nombres de subconsultas (alias de tabla):** `FROM (...) AS subconsulta` y `FROM (...) AS "subconsulta"` son igualmente válidos. No rechazar por ausencia de comillas en el alias de la subquery.
 
+#### 11b. ORDER BY con GROUP BY — CRÍTICO
+- Si la consulta tiene `GROUP BY`, el `ORDER BY` DEBE referenciar SOLO:
+  - ✅ El alias del SELECT (ej: `ORDER BY "Fecha" ASC`)
+  - ✅ El número de posición (ej: `ORDER BY 1 ASC`, `ORDER BY 2 DESC`)
+  - ✅ Una función de agregación (ej: `ORDER BY SUM("CANTIDAD") DESC`)
+  - ✅ Una expresión que aparece en el SELECT (si no tiene alias, debe ser idéntica a la del SELECT)
+
+- **RECHAZA si:**
+  - ❌ El `ORDER BY` referencia una columna cruda/expresión que NO está en el SELECT ni en el GROUP BY.
+  - Ejemplo: `SELECT TO_CHAR(TO_DATE("FECHA_MVTO", ...), 'DD/MM/YYYY') AS "Fecha" ... GROUP BY 1 ORDER BY TO_DATE("FECHA_MVTO", ...) ASC` — el `ORDER BY` usa la expresión cruda en lugar del alias "Fecha" o de la posición 1.
+  
+- **Feedback para el generador si rechazas:**
+  - *"Cuando usas GROUP BY, el ORDER BY debe usar el alias (ej: `ORDER BY \"Fecha\" ASC`), la posición (ej: `ORDER BY 1 ASC`), o una función de agregación. No puedes referenciar la expresión cruda."*
+
 #### 12. Detección de Cartesian product en comparaciones temporales
 - Si la consulta contiene `FULL OUTER JOIN`, `LEFT JOIN`, o `RIGHT JOIN` **Y** la condición ON usa `EXTRACT(DAY FROM ...)`, `EXTRACT(MONTH FROM ...)`, o `EXTRACT(YEAR FROM ...)` para comparar fechas de dos períodos → **RECHAZAR**.
 - Esto causa multiplicación artificial de filas (Cartesian product) que infla los datos.
