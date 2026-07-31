@@ -81,6 +81,7 @@ def _reglas_gen() -> str:
 9. NUNCA uses TRIM("SIGNO") ni ningun filtro sobre "SIGNO". DESC_MOVIMIENTO = 'VENTAS POS' ya delimita las ventas.
 10. CAST para ROUND en porcentajes y decimales: PostgreSQL requiere CAST(...AS numeric) antes de ROUND(). Si calculas porcentajes o decimales, usa siempre ROUND(CAST((SUM(...) * 100.0) / NULLIF(...) AS numeric), 2). NUNCA uses ROUND() sin CAST en operaciones aritmeticas.
 11. Comparaciones de periodos temporales (ej: enero vs febrero, mes1 vs mes2): NUNCA uses FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN. Usa UNA SOLA tabla con multiples CASE WHEN para cada periodo. Ejemplo correcto: SELECT SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero FROM tabla WHERE fecha BETWEEN ene_inicio AND feb_fin GROUP BY ...
+12. REFERENCIA siempre acompañada de GRUPO: Cuando la consulta incluya la columna "REFERENCIA" en el SELECT, DEBE incluir también UPPER(TRIM("GRUPO")) AS "GRUPO". Esto es obligatorio para que el usuario pueda contextualizar cada referencia dentro de su grupo de producto.
 """
 
 def _reglas_val() -> str:
@@ -1249,7 +1250,7 @@ REGLAS CRÍTICAS DE REDACCIÓN:
 4. **Números y formato:**
    - Separador de miles: 54,616 o $54,616 COP
    - Porcentajes: 1 decimal (23.5%)
-   - Unidades: sin símbolo $ (8,420 unidades)
+   - Unidades: sin  mbolo $ (8,420 unidades)
 """
     
     if tablas_markdown:
@@ -1343,7 +1344,21 @@ def procesar_consulta(pregunta: str):
         print(f'\nError al ejecutar: {resultado.get("error")}')
         sys.exit(1)
 
-    print(f'Resultado: {resultado["total_filas"]} fila(s) obtenidas.\n')
+    total_filas = resultado.get('total_filas', 0)
+    print(f'Resultado: {total_filas} fila(s) obtenidas.\n')
+
+    # ------------------------------------------------------------------
+    # Truncar a 50 filas para el LLM y auto-generar Excel si >100 filas
+    # ------------------------------------------------------------------
+    filas_completas = resultado.get('rows', [])
+    ruta_excel = ''
+    excel_auto = False
+    if total_filas > 100 and filas_completas:
+        print(f'[{MODELO}] Mas de 100 filas ({total_filas}). Generando Excel con todos los datos...')
+        ruta_excel = exportar_excel_desde_resultado(resultado, pregunta)
+        resultado['rows'] = filas_completas[:50]
+        resultado['total_filas'] = total_filas
+        excel_auto = bool(ruta_excel)
 
     # ------------------------------------------------------------------
     # Generar grafico si tiene sentido
@@ -1362,20 +1377,22 @@ def procesar_consulta(pregunta: str):
         tabla_markdown = formatear_resultado_como_tabla(resultado)
 
     # ------------------------------------------------------------------
-    # Exportar a Excel si el usuario lo pide
+    # Exportar a Excel si el usuario lo pide explicitamente
+    # (solo si no se generó ya por threshold)
     # ------------------------------------------------------------------
-    ruta_excel = ''
-    if es_intencion_excel(pregunta) and resultado.get('rows'):
+    if not excel_auto and es_intencion_excel(pregunta) and resultado.get('rows'):
         print(f'[{MODELO}] Exportando a Excel...')
         ruta_excel = exportar_excel_desde_resultado(resultado, pregunta)
 
     print(f'[{MODELO}] Redactando respuesta...')
     prompt_red = json.dumps(resultado, ensure_ascii=False, indent=2)
+    if excel_auto:
+        prompt_red += f'\n\n### Nota de datos completos\nLa consulta devolvio {total_filas} filas en total. Se muestran las primeras 50 para la respuesta. El archivo completo se ha exportado a Excel: {ruta_excel}\nIncluir en la respuesta: "Mostrando las primeras 50 de {total_filas} filas. El listado completo se exportó a Excel en: {ruta_excel}"'
     if tabla_markdown:
         prompt_red += '\n\n### Tabla de Resultados\n' + tabla_markdown + '\n\nPor favor, incluir esta tabla en la respuesta.'
     if imagenes_chat:
         prompt_red += '\n\n### Grafico generado\n' + '\n'.join(imagenes_chat) + '\n\nSi hay un grafico, incluirlo en la respuesta como imagen markdown.'
-    if ruta_excel:
+    if ruta_excel and not excel_auto:
         prompt_red += f'\n\n### Archivo Excel generado\nEl archivo Excel se ha guardado en: {ruta_excel}\nInformar al usuario que puede descargarlo desde esa ruta.'
     respuesta_final = llamar_llm(
         system_red,

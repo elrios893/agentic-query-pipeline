@@ -65,11 +65,11 @@ La tool `generar_excel()` recibe un JSON con esta estructura:
 
 | Campo | Tipo | Requerido | Descripción |
 |-------|------|-----------|-------------|
-| `headers` | `list[str]` | Sí | Nombres de las columnas |
-| `rows` | `list[list]` | Sí | Filas de datos (cada fila es un array del mismo largo que headers) |
+| `headers` | `list[str]` |   | Nombres de las columnas |
+| `rows` | `list[list]` |   | Filas de datos (cada fila es un array del mismo largo que headers) |
 | `sheet_name` | `str` | No (default `"Datos"`) | Nombre de la pestaña en el Excel |
 | `title` | `str` | No | Título centrado sobre la tabla (fila fusionada) |
-| `output_path` | `str` | Sí | Ruta completa de salida del .xlsx |
+| `output_path` | `str` |   | Ruta completa de salida del .xlsx |
 | `column_widths` | `list[int]` | No | Anchos de columna personalizados (si no se pasa, autoajusta) |
 
 ## Formato de salida de la tool

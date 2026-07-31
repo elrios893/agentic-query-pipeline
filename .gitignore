@@ -34,6 +34,9 @@ __pycache__/
 dist/
 build/
 
+# --- Deploy scripts (server-specific, no versionar) ---
+deploy/
+
 # --- OS ---
 .DS_Store
 Thumbs.db

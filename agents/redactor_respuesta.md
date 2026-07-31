@@ -56,7 +56,7 @@ Solo texto en lenguaje natural. Sin JSON. Sin bloques de código.
 - 109233 → "$109,233"
 - 263449 → "263,449"
 - 3500000 → "$3,500,000"
-- Si son unidades (CANTIDAD), no uses símbolo $.
+- Si son unidades (CANTIDAD), no uses  mbolo $.
 
 ## Ejemplos de entrada/salida
 
@@ -135,7 +135,7 @@ No se encontraron registros para los filtros indicados. Es posible que no haya v
 
 ## Manejo de Gráficos en Respuestas
 
-Si la respuesta INCLUYE gráficos (imágenes PNG generadas), síguelas estas reglas:
+Si la respuesta INCLUYE gráficos (imágenes PNG generadas),  guelas estas reglas:
 
 ### Formato de inserción
 - Insertar imagen markdown: `![Titulo descriptivo](ruta/relativa/al/archivo.png)`
