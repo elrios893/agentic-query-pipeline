@@ -31,10 +31,13 @@ La consulta debe comenzar con `SELECT`, `WITH`, o `EXPLAIN`. Si contiene `INSERT
 
 #### 2.  Columnas existen
 Verifica que cada columna mencionada exista en el esquema de `ventas`. Presta especial atención a:
-- `"Año"` (con comillas dobles y ñ)
+- `"Año"` (con comillas dobles y ñ) — columna BIGINT válida
+- `"Mes"` (sin comillas, pero válida como BIGINT) — extrae el mes (1-12) directamente, no con EXTRACT()
 - `"PVP LISTA"` (con espacio)
 - `"VENTA $ PVP LISTA"` (con $ y espacios)
 - `"DESC_MOVIMIENTO"`, `"DESC_DEPENDENCIA"`, etc.
+
+**Nota sobre "Año" y "Mes":** son columnas precalculadas en la tabla para optimizar queries temporales. Pueden usarse directamente en SELECT, WHERE, GROUP BY y ORDER BY sin necesidad de extraer de FECHA_MVTO. Esto es VÁLIDO y no debe rechazarse.
 
 #### 3.  Columnas nulas no usadas
 Las siguientes columnas son 100% nulas y NO deben aparecer en la consulta:
@@ -46,6 +49,13 @@ Si la consulta filtra por `FECHA_MVTO`, debe usar `TO_DATE("FECHA_MVTO", 'FMDD/F
 - ❌ `"FECHA_MVTO"::DATE`
 - ❌ `TO_DATE("FECHA_MVTO", 'DD/MM/YYYY')` — falla con días/meses de un dígito
 - ✅ `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') = '2026-01-07'`
+
+**Importante sobre "Año" y "Mes":** Estas son columnas precalculadas en la tabla (`"Año"` BIGINT, `"Mes"` BIGINT). Puede usarse directamente **sin extraer de FECHA_MVTO**:
+- ✅ `WHERE "Mes" = 5` — VÁLIDO (ya existe como columna)
+- ✅ `GROUP BY "Mes"` — VÁLIDO  
+- ✅ `SELECT "Mes", SUM(...) GROUP BY "Mes"` — VÁLIDO
+- ❌ `WHERE EXTRACT(MONTH FROM FECHA_MVTO) = 5` — es una alternativa válida pero menos eficiente
+- **NO rechazar consultas que usen `"Mes"` directamente**, es una optimización precomputada.
 
 #### 5.  Comillas dobles en columnas problemáticas
 Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comillas dobles:
@@ -141,22 +151,31 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 
 #### 14. LIMIT obligatorio en subqueries con "día/fecha de mayor venta"
 - Si la consulta tiene un subquery que busca "el día/fecha con más ventas" (contiene `COALESCE(..., 'Sin registros')` o `GROUP BY fecha/dia + ORDER BY SUM(...) DESC + LIMIT 1`):
-  - **CRÍTICO:** Verificar que la query principal tenga `LIMIT N` al final (donde N es un número)
-  - ❌ SIN LIMIT → **RECHAZAR** e indicar: *"Agregar `LIMIT 10` (o el número que especificó el usuario) para evitar procesar todas las filas"*
-  - ✅ CON LIMIT 10 → CORRECTO
-  - ✅ CON LIMIT 5 → CORRECTO (si el usuario pidió "top 5")
-  - Si el usuario no especifica un número, el default es `LIMIT 10`
-  - **Patrón a detectar:** Si ves `COALESCE(...SELECT...GROUP BY.*FECHA.*ORDER BY.*LIMIT 1`, verifica que la query exterior también tenga `LIMIT`
-  - **Feedback si falta:**
-    ```
-    ❌ RECHAZADA
-    
-    Errores encontrados:
-    1. Falta LIMIT en la query principal. Subqueries con "día de mayor venta" requieren LIMIT obligatorio.
-    
-    Feedback para el generador:
-    Agregar "LIMIT 10" (o "LIMIT N" si el usuario pidió específicamente top N) antes del punto y coma final.
-    ```
+   - **CRÍTICO:** Verificar que la query principal tenga `LIMIT N` al final (donde N es un número)
+   - ❌ SIN LIMIT → **RECHAZAR** e indicar: *"Agregar `LIMIT 10` (o el número que especificó el usuario) para evitar procesar todas las filas"*
+   - ✅ CON LIMIT 10 → CORRECTO
+   - ✅ CON LIMIT 5 → CORRECTO (si el usuario pidió "top 5")
+   - Si el usuario no especifica un número, el default es `LIMIT 10`
+   - **Patrón a detectar:** Si ves `COALESCE(...SELECT...GROUP BY.*FECHA.*ORDER BY.*LIMIT 1`, verifica que la query exterior también tenga `LIMIT`
+   - **Feedback si falta:**
+     ```
+     ❌ RECHAZADA
+     
+     Errores encontrados:
+     1. Falta LIMIT en la query principal. Subqueries con "día de mayor venta" requieren LIMIT obligatorio.
+     
+     Feedback para el generador:
+     Agregar "LIMIT 10" (o "LIMIT N" si el usuario pidió específicamente top N) antes del punto y coma final.
+     ```
+
+#### 15. Columnas precalculadas "Año" y "Mes"
+- `"Año"` (BIGINT) y `"Mes"` (BIGINT) son columnas **precalculadas** en la tabla para optimizar queries temporales.
+- Pueden usarse directamente sin extraer de `FECHA_MVTO`:
+   - ✅ `WHERE "Mes" = 5` — es válido y eficiente
+   - ✅ `GROUP BY "Mes"` — es válido
+   - ✅ `WHERE "Año" = 2026 AND "Mes" BETWEEN 1 AND 6` — válido
+- **NO RECHAZAR** consultas que usan `"Mes"` o `"Año"` directamente. Es una optimización precomputada, no un error.
+- Si ves que el generador usa `EXTRACT(MONTH FROM ...)` O `"Mes"` directamente, ambas formas son válidas. No rechazar por elegir una alternativa.
 
 ### Formato de salida
 

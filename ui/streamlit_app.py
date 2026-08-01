@@ -189,7 +189,7 @@ def _extraer_sql_queries(stdout: str) -> list[dict]:
     return queries
 
 
-def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool]:
+def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool, str]:
     t0 = time.time()
     try:
         env = os.environ.copy()
@@ -205,10 +205,11 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool]:
         if resultado.returncode != 0 and not salida.strip():
             error = resultado.stderr
             registrar_prompt(pregunta, 'consulta', time.time() - t0, False)
-            return f'Error: {error or f"Proceso termino con codigo {resultado.returncode}"}', [], False, False
+            return f'Error: {error or f"Proceso termino con codigo {resultado.returncode}"}', [], False, False, ''
 
         guardados = 0
         archivos = []
+        ruta_excel = ''
         es_informe = bool(re.search(r'====+\s*INFORME\s*====+', salida))
 
         for m in re.finditer(r'Markdown guardado:\s*(.+)', salida):
@@ -221,6 +222,15 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool]:
                 guardados += 1
             except ValueError:
                 pass
+
+        # Capturar Excel generado
+        for m in re.finditer(r'Excel generado:\s*(.+)', salida):
+            ruta_raw = m.group(1).strip()
+            ruta_limpia = ruta_raw.replace('\\', '/')
+            excel_path = Path(ruta_raw)
+            if excel_path.exists():
+                ruta_excel = ruta_raw
+                break
 
         for m in re.finditer(r'OK:\s*(\S+\.png)', salida):
             ruta_raw = m.group(1).strip()
@@ -258,14 +268,14 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool]:
         st.session_state.ultimo_prompt_id = prompt_id
         st.session_state.feedback_dado = False
 
-        return respuesta, imagenes, bool(guardados), es_informe
+        return respuesta, imagenes, bool(guardados), es_informe, ruta_excel
 
     except subprocess.TimeoutExpired:
         registrar_prompt(pregunta, 'consulta', time.time() - t0, False)
-        return 'La consulta tardo demasiado (mas de 10 minutos). Intenta con una pregunta mas simple.', [], False, False
+        return 'La consulta tardo demasiado (mas de 10 minutos). Intenta con una pregunta mas simple.', [], False, False, ''
     except Exception as e:
         registrar_prompt(pregunta, 'consulta', time.time() - t0, False)
-        return f'Error inesperado: {str(e)}', [], False, False
+        return f'Error inesperado: {str(e)}', [], False, False, ''
 
 
 def _widget_feedback(prompt_id: str):
@@ -323,7 +333,7 @@ if not st.session_state.messages:
 
         with st.chat_message('assistant'):
             with st.spinner('Analizando...'):
-                respuesta, imagenes, hay_nuevos, es_informe = ejecutar_pregunta(prompt)
+                respuesta, imagenes, hay_nuevos, es_informe, ruta_excel = ejecutar_pregunta(prompt)
             st.markdown(respuesta)
             for ruta in imagenes:
                 ruta_abs = BASE_DIR / ruta
@@ -331,8 +341,20 @@ if not st.session_state.messages:
                     st.image(str(ruta_abs))
                 else:
                     st.caption(f'[Grafico no encontrado: {ruta}]')
+            
+            # Mostrar botón de descarga para Excel si se generó
+            if ruta_excel:
+                excel_path = Path(ruta_excel)
+                if excel_path.exists():
+                    with open(excel_path, 'rb') as f:
+                        st.download_button(
+                            label=':material/download: Descargar Excel',
+                            data=f.read(),
+                            file_name=excel_path.name,
+                            mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        )
 
-        st.session_state.messages.append({'role': 'assistant', 'content': respuesta, 'imagenes': imagenes})
+        st.session_state.messages.append({'role': 'assistant', 'content': respuesta, 'imagenes': imagenes, 'excel': ruta_excel})
         if hay_nuevos:
             carpeta_nombre = 'Informes' if es_informe else 'Graficos'
             st.toast(f'Guardado en {carpeta_nombre}', icon=None)
@@ -350,6 +372,20 @@ for i, msg in enumerate(st.session_state.messages):
                 st.image(str(ruta_abs))
             else:
                 st.caption(f'[Grafico no encontrado: {ruta}]')
+        
+        # Mostrar botón de descarga para Excel si existe en el mensaje
+        excel_ruta = msg.get('excel')
+        if excel_ruta:
+            excel_path = Path(excel_ruta)
+            if excel_path.exists():
+                with open(excel_path, 'rb') as f:
+                    st.download_button(
+                        label=':material/download: Descargar Excel',
+                        data=f.read(),
+                        file_name=excel_path.name,
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                        key=f'download_excel_{i}',
+                    )
 
         # Feedback solo en el último mensaje del asistente, si no se ha dado aún
         es_ultimo = (i == len(st.session_state.messages) - 1)
@@ -369,7 +405,7 @@ if prompt := st.chat_input('Escribe tu pregunta sobre ventas...', submit_mode='d
 
     with st.chat_message('assistant'):
         with st.spinner('Analizando...'):
-            respuesta, imagenes, hay_nuevos, es_informe = ejecutar_pregunta(prompt)
+            respuesta, imagenes, hay_nuevos, es_informe, ruta_excel = ejecutar_pregunta(prompt)
         st.markdown(respuesta)
         for ruta in imagenes:
             ruta_abs = BASE_DIR / ruta
@@ -377,8 +413,20 @@ if prompt := st.chat_input('Escribe tu pregunta sobre ventas...', submit_mode='d
                 st.image(str(ruta_abs))
             else:
                 st.caption(f'[Grafico no encontrado: {ruta}]')
+        
+        # Mostrar botón de descarga para Excel si se generó
+        if ruta_excel:
+            excel_path = Path(ruta_excel)
+            if excel_path.exists():
+                with open(excel_path, 'rb') as f:
+                    st.download_button(
+                        label=':material/download: Descargar Excel',
+                        data=f.read(),
+                        file_name=excel_path.name,
+                        mime='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    )
 
-    st.session_state.messages.append({'role': 'assistant', 'content': respuesta, 'imagenes': imagenes})
+    st.session_state.messages.append({'role': 'assistant', 'content': respuesta, 'imagenes': imagenes, 'excel': ruta_excel})
     if hay_nuevos:
         carpeta_nombre = 'Informes' if es_informe else 'Graficos'
         st.toast(f'Guardado en {carpeta_nombre}', icon=None)

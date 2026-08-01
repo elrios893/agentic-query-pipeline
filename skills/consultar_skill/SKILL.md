@@ -87,12 +87,13 @@ Los nombres de columna que contienen espacios o caracteres especiales deben ence
 ✅ Correcto: `SELECT "PVP LISTA", "VENTA $ PVP LISTA" FROM ventas LIMIT 5;`
 ❌ Incorrecto: `SELECT PVP LISTA, VENTA $ PVP LISTA FROM ventas LIMIT 5;`
 
-### 3. Columna "Año" usa comillas dobles
+### 3. Columnas "Año" y "Mes" usan comillas dobles
 
-La columna `Año` tiene la letra `ñ`, por lo que siempre debe ir entre comillas dobles.
+Las columnas `"Año"` (con ñ) y `"Mes"` son precalculadas en la tabla (tipo BIGINT) para optimizar queries temporales. Ambas usan comillas dobles en PostgreSQL.
 
-✅ Correcto: `SELECT "Año", Mes FROM ventas LIMIT 5;`
-❌ Incorrecto: `SELECT Año, Mes FROM ventas LIMIT 5;`
+✅ Correcto: `SELECT "Año", "Mes" FROM ventas LIMIT 5;`
+✅ Correcto: `SELECT * FROM ventas WHERE "Mes" = 5 AND "Año" = 2026;`
+❌ Incorrecto: `SELECT Año, Mes FROM ventas LIMIT 5;` (sin comillas, da error de sintaxis)
 
 ### 4. Usar `COUNT(*)` para conteos
 
