@@ -4,8 +4,10 @@ import re
 import sys
 import os
 import time
+import base64
 from pathlib import Path
 from dotenv import load_dotenv
+from base64 import b64encode
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(BASE_DIR))
@@ -23,6 +25,47 @@ st.set_page_config(
     page_icon=':material/bar_chart:',
     layout='wide',
 )
+
+# ---------------------------------------------------------------------------
+# Logo en sidebar con tema (dark/light)
+# ---------------------------------------------------------------------------
+LOGO_PATH = BASE_DIR / 'assets' / 'logo' / 'belife_logo.webp'
+
+# Detectar tema actual - Streamlit por defecto es dark
+# En dark mode el logo será blanco (brightness(0) = negro puro, luego saturamos a blanco)
+# En light mode el logo será negro (brightness(1) = original)
+try:
+    from streamlit.theme import _get_theme
+    theme = _get_theme()
+    is_dark_theme = theme.base == 'dark'
+except:
+    # Fallback: dark por defecto
+    is_dark_theme = True
+
+# Filtro CSS para logo: 
+# Dark theme -> logo blanco (invert + brightness)
+# Light theme -> logo negro (brightness original)
+if is_dark_theme:
+    logo_filter = 'invert(1) brightness(1.2)'  # Convierte a blanco
+else:
+    logo_filter = 'brightness(0.9)'  # Mantiene negro
+
+# Mostrar logo en sidebar con HTML/CSS
+with st.sidebar:
+    # Leer logo como base64
+    if LOGO_PATH.exists():
+        with open(LOGO_PATH, 'rb') as f:
+            logo_base64 = b64encode(f.read()).decode()
+        
+        # HTML con filtro de color según tema
+        logo_html = f"""
+        <div style="text-align: center; padding: 20px 0; margin-bottom: 20px; border-bottom: 1px solid rgba(200, 200, 200, 0.3);">
+            <img src="data:image/webp;base64,{logo_base64}" 
+                 style="max-width: 160px; height: auto; filter: {logo_filter};" 
+                 alt="Belife Logo">
+        </div>
+        """
+        st.markdown(logo_html, unsafe_allow_html=True)
 
 SUGERENCIAS = {
     ':material/assessment: Ventas por departamento': 'ventas por departamento',
