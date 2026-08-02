@@ -27,41 +27,58 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Logo en sidebar con tema (dark/light)
+# Logo en sidebar con tema (dark/light) - Detección dinámica con CSS
 # ---------------------------------------------------------------------------
 LOGO_PATH = BASE_DIR / 'assets' / 'logo' / 'belife_logo.webp'
 
-# Detectar tema actual - Streamlit por defecto es dark
-# En dark mode el logo será blanco (brightness(0) = negro puro, luego saturamos a blanco)
-# En light mode el logo será negro (brightness(1) = original)
-try:
-    from streamlit.theme import _get_theme
-    theme = _get_theme()
-    is_dark_theme = theme.base == 'dark'
-except:
-    # Fallback: dark por defecto
-    is_dark_theme = True
+# Inyectar CSS global que detecta tema dinámicamente
+st.markdown("""
+<style>
+    /* Logo con filtro dinámico según tema */
+    :root {
+        --logo-filter-dark: invert(1) brightness(1.2);
+        --logo-filter-light: brightness(0.8);
+    }
+    
+    @media (prefers-color-scheme: dark) {
+        .belife-logo {
+            filter: invert(1) brightness(1.2) !important;
+        }
+    }
+    
+    @media (prefers-color-scheme: light) {
+        .belife-logo {
+            filter: brightness(0.8) !important;
+        }
+    }
+    
+    .logo-container {
+        text-align: center;
+        padding: 20px 0;
+        margin-bottom: 20px;
+        border-bottom: 1px solid rgba(200, 200, 200, 0.3);
+    }
+    
+    .belife-logo {
+        max-width: 160px;
+        height: auto;
+        transition: filter 0.3s ease;
+    }
+</style>
+""", unsafe_allow_html=True)
 
-# Filtro CSS para logo: 
-# Dark theme -> logo blanco (invert + brightness)
-# Light theme -> logo negro (brightness original)
-if is_dark_theme:
-    logo_filter = 'invert(1) brightness(1.2)'  # Convierte a blanco
-else:
-    logo_filter = 'brightness(0.9)'  # Mantiene negro
-
-# Mostrar logo en sidebar con HTML/CSS
+# Mostrar logo en sidebar
 with st.sidebar:
     # Leer logo como base64
     if LOGO_PATH.exists():
         with open(LOGO_PATH, 'rb') as f:
             logo_base64 = b64encode(f.read()).decode()
         
-        # HTML con filtro de color según tema
+        # HTML con clase que reacciona al tema
         logo_html = f"""
-        <div style="text-align: center; padding: 20px 0; margin-bottom: 20px; border-bottom: 1px solid rgba(200, 200, 200, 0.3);">
+        <div class="logo-container">
             <img src="data:image/webp;base64,{logo_base64}" 
-                 style="max-width: 160px; height: auto; filter: {logo_filter};" 
+                 class="belife-logo" 
                  alt="Belife Logo">
         </div>
         """
