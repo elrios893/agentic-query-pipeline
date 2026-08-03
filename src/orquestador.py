@@ -65,7 +65,11 @@ def _reglas_gen() -> str:
 
 ### Contexto temporal
 - Hoy es {datetime.now().strftime('%d/%m/%Y')}.
-- La tabla ventas SOLO contiene datos del año {anio}.
+- La tabla ventas_2026 SOLO contiene datos del año {anio}.
+- La tabla ventas_2025 SOLO contiene datos del año 2025.
+- Ambas tablas tienen el mismo esquema de columnas.
+- Si el usuario pregunta por 2025 usa ventas_2025. Si no especifica año, usa ventas_2026.
+- NUNCA uses FROM ventas (sin sufijo de año), esa tabla no existe.
 - Cuando el usuario mencione un dia o mes sin especificar año, SIEMPRE usa {anio}.
 - NUNCA uses ningun otro año.
 
@@ -1117,12 +1121,11 @@ Responde con un JSON con esta estructura exacta:
             'bloques': ['A', 'B', 'C'],
             'consultas': [
                 {'nombre': 'ventas_totales',
-                 'sql': """SELECT COUNT(*) AS transacciones,
-                                  SUM("CANTIDAD") AS unidades,
-                                  SUM("CANTIDAD" * "PVP") AS valor_cop
-                           FROM ventas
-                           WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
-                             AND TRIM("SIGNO") = '-'"""},
+                  'sql': """SELECT COUNT(*) AS transacciones,
+                                   SUM("CANTIDAD") AS unidades,
+                                   SUM("CANTIDAD" * "PVP") AS valor_cop
+                           FROM ventas_2026
+                           WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'"""},
             ]
         }
 

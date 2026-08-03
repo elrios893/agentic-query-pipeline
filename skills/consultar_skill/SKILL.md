@@ -1,14 +1,13 @@
 ---
 name: consultar-skill
 description: >
-  Skill para formular y ejecutar consultas SQL en PostgreSQL sobre la base de datos CreytexToSQL (tabla ventas).
+  Skill para formular y ejecutar consultas SQL en PostgreSQL sobre la base de datos CreytexToSQL (tablas ventas_2025 y ventas_2026).
   Proporciona reglas, restricciones y el contexto completo del esquema para que un agente genere queries precisas.
 license: MIT
 compatibility: opencode
 metadata:
   database: CreytexToSQL
-  tabla_principal: ventas
-  total_filas: 263449
+  tablas: ventas_2025, ventas_2026
   motor: PostgreSQL
 ---
 
@@ -16,7 +15,7 @@ metadata:
 
 ##  Objetivo
 
-Ejecutar consultas SQL **solo de lectura (READ-ONLY)** sobre la tabla `ventas` en la base de datos PostgreSQL `CreytexToSQL`. Este skill está diseñado para que un agente IA pueda generar queries precisas sin errores de sintaxis ni lógica.
+Ejecutar consultas SQL **solo de lectura (READ-ONLY)** sobre las tablas `ventas_2025` y `ventas_2026` en la base de datos PostgreSQL `CreytexToSQL`. Ambas tablas tienen el mismo esquema de columnas. Usar `ventas_2026` para datos del año actual y `ventas_2025` para datos del año anterior.
 
 ## ⛔ Restricción estricta: SOLO LECTURA
 
@@ -46,8 +45,8 @@ Si el usuario pide explícitamente una modificación, el agente debe **rechazar 
 | Puerto | 5432 |
 | Base de datos | `CreytexToSQL` |
 | Usuario | `postgres` |
-| Contraseña | `root` |
-| Tabla | `ventas` |
+| Contraseña | `postgres` |
+| Tabla | `ventas_2026` o `ventas_2025` |
 
 Usa `psycopg2` para conectarte desde Python:
 
@@ -58,7 +57,7 @@ conn = psycopg2.connect(
     port=5432,
     dbname='CreytexToSQL',
     user='postgres',
-    password='root'
+    password='postgres'
 )
 cur = conn.cursor()
 ```
@@ -76,31 +75,32 @@ Toda consulta `SELECT` debe incluir `LIMIT N` (salvo que sea una agregacion con 
 | GROUP BY con muchas categorias (tallas, tiendas, SKUs) | `LIMIT 200` |
 | COUNT(*) o agregaciones con pocos grupos | Sin LIMIT |
 
-✅ Correcto: `SELECT * FROM ventas LIMIT 20;`
-✅ Correcto: `SELECT "DEPARTAMENTO", SUM("CANTIDAD") FROM ventas GROUP BY "DEPARTAMENTO";` (agregacion con pocos grupos)
-❌ Incorrecto: `SELECT * FROM ventas;` (sin LIMIT, devuelve ~265K filas)
+✅ Correcto: `SELECT * FROM ventas_2026 LIMIT 20;`
+✅ Correcto: `SELECT "DEPARTAMENTO", SUM("CANTIDAD") FROM ventas_2026 GROUP BY "DEPARTAMENTO";` (agregacion con pocos grupos)
+❌ Incorrecto: `SELECT * FROM ventas;` (tabla sin sufijo no existe — usar ventas_2025 o ventas_2026)
 
 ### 2. Columnas con espacios requieren comillas dobles
 
 Los nombres de columna que contienen espacios o caracteres especiales deben encerrarse con `"` (comillas dobles).
 
-✅ Correcto: `SELECT "PVP LISTA", "VENTA $ PVP LISTA" FROM ventas LIMIT 5;`
-❌ Incorrecto: `SELECT PVP LISTA, VENTA $ PVP LISTA FROM ventas LIMIT 5;`
+✅ Correcto: `SELECT "PVP LISTA", "VENTA $ PVP LISTA" FROM ventas_2026 LIMIT 5;`
+❌ Incorrecto: `SELECT PVP LISTA, VENTA $ PVP LISTA FROM ventas_2026 LIMIT 5;`
 
 ### 3. Columnas "Año" y "Mes" usan comillas dobles
 
 Las columnas `"Año"` (con ñ) y `"Mes"` son precalculadas en la tabla (tipo BIGINT) para optimizar queries temporales. Ambas usan comillas dobles en PostgreSQL.
 
-✅ Correcto: `SELECT "Año", "Mes" FROM ventas LIMIT 5;`
-✅ Correcto: `SELECT * FROM ventas WHERE "Mes" = 5 AND "Año" = 2026;`
-❌ Incorrecto: `SELECT Año, Mes FROM ventas LIMIT 5;` (sin comillas, da error de sintaxis)
+✅ Correcto: `SELECT "Año", "Mes" FROM ventas_2026 LIMIT 5;`
+✅ Correcto: `SELECT * FROM ventas_2026 WHERE "Mes" = 5 AND "Año" = 2026;`
+✅ Correcto: `SELECT * FROM ventas_2025 WHERE "Mes" = 3 AND "Año" = 2025;`
+❌ Incorrecto: `SELECT Año, Mes FROM ventas_2026 LIMIT 5;` (sin comillas, da error de sintaxis)
 
 ### 4. Usar `COUNT(*)` para conteos
 
 Para contar registros usa `COUNT(*)`. Si necesitas valores únicos usa `COUNT(DISTINCT columna)`.
 
-✅ Correcto: `SELECT COUNT(*) FROM ventas;`
-✅ Correcto: `SELECT COUNT(DISTINCT "DESC_MOVIMIENTO") FROM ventas;`
+✅ Correcto: `SELECT COUNT(*) FROM ventas_2026;`
+✅ Correcto: `SELECT COUNT(DISTINCT "DESC_MOVIMIENTO") FROM ventas_2026;`
 
 ### 5. Fechas: FECHA_MVTO está como TEXT en D/M/YYYY sin ceros
 
@@ -108,13 +108,13 @@ La columna `FECHA_MVTO` es de tipo `text` en formato `D/M/YYYY` **sin ceros a la
 
 ```sql
 -- Filtrar por rango de fechas
-SELECT * FROM ventas
+SELECT * FROM ventas_2026
 WHERE TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '2026-01-15'
 LIMIT 20;
 
 -- Extraer mes o año
 SELECT EXTRACT(MONTH FROM TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS mes, COUNT(*)
-FROM ventas
+FROM ventas_2026
 GROUP BY mes;
 ```
 
@@ -133,7 +133,7 @@ Usa `DESC_MOVIMIENTO` para filtrar por tipo de operación. Valores posibles:
 | `CAMBIOS DE MERCANCIA ACLIENTE` | Cambios o devoluciones de clientes |
 | `DEVOLUCIÓN AL PROVEEDOR` | Devoluciones a proveedor |
 
-✅ Correcto: `SELECT * FROM ventas WHERE "DESC_MOVIMIENTO" = 'VENTAS POS' LIMIT 20;`
+✅ Correcto: `SELECT * FROM ventas_2026 WHERE "DESC_MOVIMIENTO" = 'VENTAS POS' LIMIT 20;`
 
 ### 7. SIGNO indica dirección del inventario
 
@@ -161,11 +161,11 @@ Si en el futuro existen otras tablas, usa `LLAVE_DEP2`, `COD_SIESA`, `LLAVE_NAVA
 
 Las columnas `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU` y `LLAVE_DEP` pueden ser completamente nulas. No las uses sin verificar antes.
 
-##  Esquema de la tabla `ventas`
+##  Esquema de la tabla `ventas_2025` / `ventas_2026`
 
 > **Fuente de verdad única:** el esquema completo (columnas, tipos, valores válidos por campo)
-> está documentado en `agents/generador_consultas.md`, sección **"Esquema de la tabla `ventas`"**.
-> No se duplica aquí para evitar desincronización. Consultarlo antes de generar cualquier query.
+> está documentado en `agents/generador_consultas.md`, sección **"Esquema de la tabla `ventas_2025` / `ventas_2026`"**.
+> Ambas tablas tienen exactamente el mismo esquema. No se duplica aquí para evitar desincronización.
 >
 > Columnas clave a recordar:
 > - `LINEA`: casing mixto exacto — **NO usar `UPPER()`**. Valores: `"10 - Dama Exterior"`, `"11 - Dama Deportivo"`, `"12 - Hombre Exterior"`, `"13 - Hombre Deportivo"`, `"14 - Junior Femenino"`, `"15 - Junior Masculino"`, `"16 - Bebita"`, `"17 - Bebito"`, `"19 - Primis Bebito"`, `"20 - Primis Bebita"`.
@@ -181,9 +181,9 @@ Las columnas `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PO
 ##  Ejemplos de consultas útiles
 
 ```sql
--- Top 10 tiendas con más ventas
+-- Top 10 tiendas con más ventas (año 2026)
 SELECT "DESC_DEPENDENCIA", SUM("CANTIDAD") AS total_unidades
-FROM ventas
+FROM ventas_2026
 WHERE "DESC_MOVIMIENTO" = 'VENTAS POS'
 GROUP BY "DESC_DEPENDENCIA"
 ORDER BY total_unidades DESC
@@ -191,14 +191,14 @@ LIMIT 10;
 
 -- Ventas por departamento
 SELECT "DEPARTAMENTO", COUNT(*) AS transacciones, SUM("CANTIDAD") AS unidades
-FROM ventas
+FROM ventas_2026
 WHERE "DESC_MOVIMIENTO" = 'VENTAS POS'
 GROUP BY "DEPARTAMENTO"
 ORDER BY unidades DESC;
 
 -- Distribución de tallas vendidas
 SELECT "TALLA", COUNT(*) AS cantidad
-FROM ventas
+FROM ventas_2026
 WHERE "DESC_MOVIMIENTO" = 'VENTAS POS'
 GROUP BY "TALLA"
 ORDER BY cantidad DESC;
@@ -206,25 +206,32 @@ ORDER BY cantidad DESC;
 -- Ingresos totales por tienda (PVP * CANTIDAD)
 SELECT "DESC_DEPENDENCIA",
        SUM("CANTIDAD" * "PVP") AS ingresos_totales
-FROM ventas
+FROM ventas_2026
 WHERE "DESC_MOVIMIENTO" = 'VENTAS POS'
 GROUP BY "DESC_DEPENDENCIA"
 ORDER BY ingresos_totales DESC
 LIMIT 10;
 
--- Productos más movidos (entradas + salidas)
-SELECT "DESC_ITEM", "TALLA", "COLOR", SUM("CANTIDAD") AS total_movido
-FROM ventas
-GROUP BY "DESC_ITEM", "TALLA", "COLOR"
-ORDER BY total_movido DESC
-LIMIT 10;
+-- Comparar ventas totales 2025 vs 2026
+WITH data AS (
+    SELECT "Año", "CANTIDAD", "PVP"
+    FROM ventas_2025 WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+    UNION ALL
+    SELECT "Año", "CANTIDAD", "PVP"
+    FROM ventas_2026 WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+)
+SELECT "Año", SUM("CANTIDAD") AS "Unidades", SUM("CANTIDAD" * "PVP") AS "Valor_COP"
+FROM data
+GROUP BY "Año"
+ORDER BY "Año";
 ```
 
 ##  Errores comunes que debes evitar
 
 | Error | Explicación |
 |-------|-------------|
-| `SELECT * FROM ventas` sin `LIMIT` | Puede devolver 263K filas y colapsar la conexión |
+| `SELECT * FROM ventas` (sin sufijo) | La tabla `ventas` no existe. Usar `ventas_2025` o `ventas_2026` |
+| `SELECT * FROM ventas_2026` sin `LIMIT` | Puede devolver 300K+ filas y colapsar la conexión |
 | Usar `Año` sin comillas | PostgreSQL interpretará `A` como alias y `ño` como error de sintaxis |
 | `FECHA_MVTO = '2026-01-01'` sin castear | Falla porque es TEXT, no DATE. Usa `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') = '2026-01-01'` |
 | `"FECHA_MVTO"::DATE` | FALLA — el formato es D/M/YYYY sin ceros. Usa `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')` |

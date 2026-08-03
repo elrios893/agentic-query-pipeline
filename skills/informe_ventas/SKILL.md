@@ -26,7 +26,7 @@ activator:
   output_dir: reports/
 metadata:
   cliente: Creytex
-  tabla_origen: ventas
+  tabla_origen: ventas_2025, ventas_2026
   herramienta_conversion: generar_docx
   carpeta_salida: reports/
 ---
@@ -425,7 +425,7 @@ Con número de posición (1, 2, 3...) e incluir % del total como contexto.
 **Cuando usar:** cuando el usuario pide ver el listado completo.
 
 Tabla completa sin limitar filas, al final del documento.
-Indicar: "Datos extraidos de tabla `ventas` — CreytexToSQL."
+Indicar: "Datos extraidos de tablas `ventas_2025` / `ventas_2026` — CreytexToSQL."
 
 ---
 
