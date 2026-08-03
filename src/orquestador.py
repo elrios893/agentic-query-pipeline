@@ -101,7 +101,7 @@ def _reglas_val() -> str:
 5. Revisa que use "CANTIDAD" * "PVP" para valor de ventas, no "PVP LISTA" (a menos que sea consulta macro).
 6. Revisa que los alias con mayusculas usen comillas dobles en ORDER BY/GROUP BY.
 7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER en el SELECT, NO rechazar — es opcional.
-8. Verifica que el año en los literales de fecha sea {anio}. Si ves 2024, 2025 u otro año en una fecha literal, RECHAZAR.
+8. Verifica que el año en los literales de fecha sea {anio} o 2025. Si ves 2024 u otro año en una fecha literal, RECHAZAR.
 9. LINEA — excepcion critica: la columna LINEA tiene casing mixto. TRIM("LINEA") = '11 - Dama Deportivo' es CORRECTO. UPPER(TRIM("LINEA")) en un filtro WHERE es un ERROR — RECHAZAR si aparece. NUNCA rechazar una query por usar TRIM("LINEA") sin UPPER.
 10. SIGNO — prohibido: NUNCA debe aparecer TRIM("SIGNO") ni ningun filtro sobre "SIGNO" en la query. Si aparece → RECHAZAR e indicar que se elimine. DESC_MOVIMIENTO = 'VENTAS POS' ya delimita las ventas sin necesidad de SIGNO.
 11. LIMIT y window functions: si la consulta usa RANK(), ROW_NUMBER() o DENSE_RANK() con un filtro WHERE sobre el ranking (ej: WHERE ranking = 1), el resultado esta acotado por el numero de grupos del PARTITION BY — NO exigir LIMIT. Lineas de producto son ~10, departamentos ~33, tallas ~10: estos GROUP BY nunca necesitan LIMIT.
@@ -904,14 +904,16 @@ Decide si tiene sentido generar un grafico con estos datos.
 - Si tiene sentido, genera hasta 1 grafico.
 
 REGLA CRÍTICA DE TIPO Y SERIE:
-- Si la pregunta contiene palabras como "compara", "versus", "vs", "diferencia"
-  Y los datos tienen múltiples columnas numéricas (ej: Ventas_Enero, Ventas_Febrero):
-  ENTONCES tipo = "barras_agrupadas" y columna_serie = nombre de la serie (ej: "Ventas_Enero")
-  Esto crea barras lado-a-lado para comparar valores entre series.
-  
-- Si la columna_x contiene fechas, días, semanas o meses (nombre: Fecha, dia, fecha_mvto, etc.)
-  Y NO es comparación de múltiples series:
+- Si la columna_x contiene fechas, días, semanas, meses o "Dia" (temporal):
+  Y hay múltiples columnas numéricas con sufijos de año (ej: Valor_2025, Valor_2026):
   ENTONCES tipo = "linea" y columna_serie = null
+  (El código transformará automáticamente las columnas numéricas en series para graficar líneas superpuestas)
+  
+- Si la pregunta contiene palabras como "compara", "versus", "vs", "diferencia"
+  Y los datos tienen múltiples columnas numéricas (ej: Ventas_Enero, Ventas_Febrero)
+  Y la columna_x NO es temporal:
+  ENTONCES tipo = "barras_agrupadas" y columna_serie = nombre de la serie
+  Esto crea barras lado-a-lado para comparar valores entre series.
   
 - Si columna_x son categorías (departamentos, tiendas, tallas, referencias):
   ENTONCES tipo = "barras_horizontales" o "barras_verticales" y columna_serie = null
@@ -981,8 +983,49 @@ Responde SOLO con un JSON valido con este formato:
 
         datos_graf = []
         
-        # CASO ESPECIAL: barras_agrupadas transforma datos
-        if tipo == 'barras_agrupadas' and col_serie:
+        # CASO ESPECIAL 1: linea con múltiples columnas numéricas (tendencia comparativa)
+        # Detecta si hay columnas con sufijos de año (ej: Valor_2025, Valor_2026)
+        if tipo == 'linea':
+            # Crear diccionarios de filas para acceso fácil
+            filas_dict = [dict(zip(data_cols, row)) for row in data_rows]
+            
+            # Extraer todas las columnas numéricas (excepto la columna X)
+            columnas_numericas = []
+            for col in data_cols:
+                if col == col_x_real or col == col_x:
+                    continue
+                # Verificar si la columna tiene valores numéricos
+                es_numerica = all(
+                    isinstance(fila_dict.get(col), (int, float)) or
+                    (isinstance(fila_dict.get(col), str) and 
+                     (str(fila_dict.get(col)).replace('.', '').replace(',', '').isdigit() or str(fila_dict.get(col)) == ''))
+                    for fila_dict in filas_dict
+                )
+                if es_numerica:
+                    columnas_numericas.append(col)
+            
+            # Si hay múltiples columnas numéricas (comparación), usar cada una como serie
+            if len(columnas_numericas) > 1:
+                for fila_dict in filas_dict:
+                    x_val = str(fila_dict.get(col_x_real or col_x, ''))
+                    
+                    for col_num in columnas_numericas:
+                        y_val = float(fila_dict.get(col_num, 0) or 0)
+                        datos_graf.append({
+                            'x': x_val,
+                            'y': y_val,
+                            'serie': col_num  # Nombre de la columna como leyenda
+                        })
+            else:
+                # Una sola columna numérica — comportamiento normal
+                for fila_dict in filas_dict:
+                    datos_graf.append({
+                        'x': str(fila_dict.get(col_x_real or col_x, '')),
+                        'y': float(fila_dict.get(col_y_real or col_y, 0) or 0),
+                    })
+        
+        # CASO ESPECIAL 2: barras_agrupadas transforma datos
+        elif tipo == 'barras_agrupadas' and col_serie:
             # Para barras agrupadas, necesitamos crear 2 puntos de datos por fila:
             # Uno para col_y (serie 1) y otro para col_serie (serie 2)
             col_s_real = _match_col(col_serie, data_cols)

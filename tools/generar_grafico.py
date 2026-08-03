@@ -129,7 +129,16 @@ def generar_grafico(
     ----------
     datos : list[dict]
         Cada dict representa una fila con claves 'x', 'y' (y opcional 'serie').
-        Ej: [{"x": "ANTIOQUIA", "y": 33632}, {"x": "BOGOTA", "y": 16288}]
+        
+        Para tipo 'linea' CON múltiples series:
+            [{"x": "Dia1", "y": 100, "serie": "2025"},
+             {"x": "Dia1", "y": 150, "serie": "2026"},
+             {"x": "Dia2", "y": 120, "serie": "2025"},
+             {"x": "Dia2", "y": 160, "serie": "2026"}]
+        
+        Para tipo 'linea' CON UNA sola serie (sin 'serie'):
+            [{"x": "Ene", "y": 12000}, {"x": "Feb", "y": 14500}]
+            
     tipo : str
         linea | barras_horizontales | barras_verticales | barras_agrupadas | torta
     titulo : str
@@ -202,23 +211,45 @@ def generar_grafico(
 
     try:
         if tipo == 'linea':
-            ax.plot(x_vals, y_vals, color=COLOR_PRINCIPAL, linewidth=2, marker='o', markersize=5)
-            ax.fill_between(range(len(x_vals)), y_vals, alpha=0.08, color=COLOR_PRINCIPAL)
-            # Samplear ticks si hay demasiados puntos para evitar superposicion
-            if n > max_ticks:
-                step = max(1, n // max_ticks)
-                tick_indices = list(range(0, n, step))
-                # Asegurar que el ultimo punto siempre aparezca
-                if tick_indices[-1] != n - 1:
-                    tick_indices.append(n - 1)
+            # Verificar si hay múltiples series (comparacion)
+            tiene_series = any(d.get('serie') for d in datos)
+            
+            if tiene_series:
+                # Agrupar datos por serie (para múltiples líneas)
+                _graficar_lineas_multiples(ax, datos, formatter, tick_fs, max_ticks)
             else:
-                tick_indices = list(range(n))
+                # Una sola línea (comportamiento original)
+                ax.plot(x_vals, y_vals, color=COLOR_PRINCIPAL, linewidth=2, marker='o', markersize=5)
+                ax.fill_between(range(len(x_vals)), y_vals, alpha=0.08, color=COLOR_PRINCIPAL)
+            
+            # Samplear ticks si hay demasiados puntos para evitar superposicion
+            n_x_unicos = len(set(x_vals))
+            if n_x_unicos > max_ticks:
+                step = max(1, n_x_unicos // max_ticks)
+                tick_indices = list(range(0, n_x_unicos, step))
+                # Asegurar que el ultimo punto siempre aparezca
+                if tick_indices[-1] != n_x_unicos - 1:
+                    tick_indices.append(n_x_unicos - 1)
+            else:
+                tick_indices = list(range(n_x_unicos))
+            
+            # Obtener etiquetas X únicas en orden
+            x_unicos = []
+            for d in datos:
+                x_str = str(d.get('x', ''))
+                if x_str not in x_unicos:
+                    x_unicos.append(x_str)
+            
             ax.set_xticks(tick_indices)
-            ax.set_xticklabels([x_vals[i] for i in tick_indices], rotation=30, ha='right', fontsize=tick_fs)
+            ax.set_xticklabels([x_unicos[i] for i in tick_indices], rotation=30, ha='right', fontsize=tick_fs)
             aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
             ax.set_title(titulo, fontweight='bold', fontsize=13, color=COLOR_TEXTO, pad=12)
             ax.set_xlabel(etiqueta_x, fontsize=10, color=COLOR_TEXTO, labelpad=8)
             ax.set_ylabel(etiqueta_y, fontsize=10, color=COLOR_TEXTO, labelpad=8)
+            
+            # Agregar leyenda si hay múltiples series
+            if tiene_series:
+                ax.legend(fontsize=9, framealpha=0.9, edgecolor=COLOR_SPINE, loc='best')
 
         elif tipo == 'barras_horizontales':
             indices = list(range(len(x_vals)))
@@ -343,6 +374,45 @@ def _graficar_barras_agrupadas(ax, datos, formatter, tick_fs=8):
     ax.legend(fontsize=8, framealpha=0.9, edgecolor=COLOR_SPINE)
 
 
+def _graficar_lineas_multiples(ax, datos, formatter, tick_fs=8, max_ticks=15):
+    """
+    Grafica múltiples líneas (series) en un mismo gráfico.
+    Agrupa datos por serie, ordena por X, y dibuja una línea por serie.
+    """
+    from collections import OrderedDict
+    
+    # Agrupar datos por serie
+    series_data = OrderedDict()
+    x_unicos = []
+    
+    for d in datos:
+        x_str = str(d.get('x', ''))
+        s_str = str(d.get('serie', ''))
+        y_val = float(d.get('y', 0))
+        
+        if s_str not in series_data:
+            series_data[s_str] = OrderedDict()
+        series_data[s_str][x_str] = y_val
+        
+        if x_str not in x_unicos:
+            x_unicos.append(x_str)
+    
+    # Colores para las diferentes series
+    colores_serie = [COLOR_PRINCIPAL, COLOR_GRIS, '#5B9BD5', '#ED7D31', '#70AD47']
+    
+    # Dibujar una línea por serie
+    for i, (serie_nombre, valores_dict) in enumerate(series_data.items()):
+        # Obtener valores en orden de x_unicos
+        y_vals = [valores_dict.get(x, 0) for x in x_unicos]
+        color = colores_serie[i % len(colores_serie)]
+        
+        # Dibujar línea con marcadores
+        ax.plot(range(len(x_unicos)), y_vals, color=color, linewidth=2.5, 
+                marker='o', markersize=6, label=serie_nombre)
+        # Relleno suave bajo la línea
+        ax.fill_between(range(len(x_unicos)), y_vals, alpha=0.05, color=color)
+
+
 # ===================================================================
 # Ejemplos de uso (ejecutar directamente para validar visualmente)
 # ===================================================================
@@ -390,7 +460,7 @@ if __name__ == '__main__':
     print(json.dumps(r2, indent=2))
 
     # --- 3. Linea ---
-    print('\nEjemplo 3: Linea')
+    print('\nEjemplo 3: Linea (una sola serie)')
     r3 = generar_grafico(
         datos=[
             {'x': 'Ene', 'y': 12000},
@@ -408,6 +478,28 @@ if __name__ == '__main__':
         timestamp=ts,
     )
     print(json.dumps(r3, indent=2))
+
+    # --- 3b. Linea con múltiples series (comparación) ---
+    print('\nEjemplo 3b: Linea (múltiples series - comparación 2025 vs 2026)')
+    r3b = generar_grafico(
+        datos=[
+            {'x': 'Dia1', 'y': 100000, 'serie': 'Valor_2025'},
+            {'x': 'Dia1', 'y': 150000, 'serie': 'Valor_2026'},
+            {'x': 'Dia2', 'y': 120000, 'serie': 'Valor_2025'},
+            {'x': 'Dia2', 'y': 160000, 'serie': 'Valor_2026'},
+            {'x': 'Dia3', 'y': 95000, 'serie': 'Valor_2025'},
+            {'x': 'Dia3', 'y': 145000, 'serie': 'Valor_2026'},
+            {'x': 'Dia4', 'y': 130000, 'serie': 'Valor_2025'},
+            {'x': 'Dia4', 'y': 175000, 'serie': 'Valor_2026'},
+        ],
+        tipo='linea',
+        titulo='Comparación de Ventas: 2025 vs 2026',
+        etiqueta_x='Día',
+        etiqueta_y='Valor (COP)',
+        formato_y='moneda',
+        timestamp=ts,
+    )
+    print(json.dumps(r3b, indent=2))
 
     # --- 4. Torta ---
     print('\nEjemplo 4: Torta (participacion)')
