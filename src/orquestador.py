@@ -47,6 +47,20 @@ elif PROVIDER == 'gemini':
 else:
     raise ValueError(f'LLM_PROVIDER desconocido: {PROVIDER}. Usa: groq, cerebras, gemini')
 
+# ---------------------------------------------------------------------------
+# Cliente de clasificación de intención — siempre Groq (llama-3.1-8b-instant)
+# independiente del proveedor principal configurado en LLM_PROVIDER
+# ---------------------------------------------------------------------------
+CLASSIFY_INFERENCE   = os.getenv('CLASSIFY_INFERENCE', 'NO').strip().upper()
+GROQ_MODEL_INFERENCE = os.getenv('GROQ_MODEL_INFERENCE', 'llama-3.1-8b-instant')
+
+# Importar Groq si no se importó ya (puede que el provider principal sea cerebras/gemini)
+try:
+    from groq import Groq as _GroqClass
+    _client_inference = _GroqClass(api_key=os.getenv('GROQ_API_KEY'))
+except Exception:
+    _client_inference = None
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 AGENTS_DIR = BASE_DIR / 'agents'
 TOOLS_DIR = BASE_DIR / 'tools'
@@ -1368,6 +1382,371 @@ El gráfico anterior muestra que Antioquia domina...
     print('=' * 60)
     print(md_informe)
 
+# ---------------------------------------------------------------------------
+# Clasificador de intención analítica
+# ---------------------------------------------------------------------------
+
+PATRON_ANALISIS = re.compile(
+    r'\b(analiz[a-z]*|explica[a-z]*|por\s+qu[eé]|a\s+qu[eé]\s+se\s+debe|'
+    r'raz[oó]n|causa[s]?|investiga[a-z]*|profundiz[a-z]*|qu[eé]\s+pas[oó]|'
+    r'qu[eé]\s+ocurri[oó]|c[oó]mo\s+es\s+posible|interpreta[a-z]*|'
+    r'qu[eé]\s+factores|qu[eé]\s+lo\s+explica|diagnostica[a-z]*)\b',
+    re.IGNORECASE,
+)
+
+def _es_comando_analisis(pregunta: str) -> tuple[bool, str]:
+    """
+    Detecta si la pregunta empieza con /analisis.
+    Retorna (es_comando, pregunta_limpia).
+    """
+    limpia = pregunta.strip()
+    if re.match(r'^/analisis\b', limpia, re.IGNORECASE):
+        prompt_limpio = re.sub(r'^/analisis\s*', '', limpia, flags=re.IGNORECASE).strip()
+        return True, prompt_limpio
+    return False, limpia
+
+
+def _clasificar_intencion_regex(pregunta: str) -> bool:
+    """Detecta intención analítica via regex."""
+    return bool(PATRON_ANALISIS.search(pregunta))
+
+
+def _clasificar_intencion_llm(pregunta: str) -> bool:
+    """
+    Detecta intención analítica usando llama-3.1-8b-instant via Groq.
+    Retorna True si la pregunta requiere análisis profundo.
+    """
+    if _client_inference is None:
+        print('  [clasificador] cliente Groq no disponible, usando regex como fallback')
+        return _clasificar_intencion_regex(pregunta)
+
+    system = (
+        'Eres un clasificador binario. Determina si la pregunta del usuario '
+        'requiere análisis profundo de datos (buscar causas, relaciones, patrones, '
+        'explicaciones del por qué) o si es solo una consulta de datos simple '
+        '(un número, un listado, un conteo).\n'
+        'Responde ÚNICAMENTE con una sola palabra: SI o NO.\n'
+        'SI = requiere análisis profundo.\n'
+        'NO = consulta simple de datos.'
+    )
+    try:
+        resp = _client_inference.chat.completions.create(
+            model=GROQ_MODEL_INFERENCE,
+            messages=[
+                {'role': 'system', 'content': system},
+                {'role': 'user',   'content': pregunta},
+            ],
+            temperature=0.0,
+            max_tokens=5,
+        )
+        resultado = resp.choices[0].message.content.strip().upper()
+        print(f'  [clasificador LLM] respuesta: {resultado}')
+        return resultado.startswith('SI') or resultado == 'SÍ'
+    except Exception as e:
+        print(f'  [clasificador LLM] error: {e} — usando regex como fallback')
+        return _clasificar_intencion_regex(pregunta)
+
+
+def es_intencion_analisis(pregunta: str, resultado: dict | None = None) -> bool:
+    """
+    Decide si activar el agente analista.
+    - CLASSIFY_INFERENCE=YES → usa llama-3.1-8b (confía sin filtro de tamaño)
+    - CLASSIFY_INFERENCE=NO  → usa regex + filtro de tamaño (>5 filas, >1 col numérica)
+    """
+    if CLASSIFY_INFERENCE == 'YES':
+        return _clasificar_intencion_llm(pregunta)
+    else:
+        if not _clasificar_intencion_regex(pregunta):
+            return False
+        # Filtro de tamaño: solo activar si hay suficientes datos
+        if resultado:
+            filas = resultado.get('total_filas', 0)
+            cols  = resultado.get('columns', [])
+            # Contar columnas numéricas
+            rows = resultado.get('rows', [])
+            cols_numericas = 0
+            if rows:
+                primera_fila = dict(zip(cols, rows[0]))
+                cols_numericas = sum(
+                    1 for v in primera_fila.values()
+                    if isinstance(v, (int, float))
+                )
+            if filas <= 5 or cols_numericas <= 1:
+                print(f'  [clasificador regex] intención detectada pero datos insuficientes ({filas} filas, {cols_numericas} cols numéricas) — omitiendo analista')
+                return False
+        return True
+
+
+# ---------------------------------------------------------------------------
+# Pre-cómputo de métricas (Python puro, sin LLM)
+# ---------------------------------------------------------------------------
+
+def pre_computar_metricas(resultado: dict) -> dict:
+    """
+    Calcula métricas derivadas sobre el resultado SQL antes de enviarlo al analista.
+    El analista recibe hechos ya calculados, no solo números crudos.
+
+    Retorna dict con:
+      - total_general: suma de cada columna numérica
+      - variaciones_pct: cambio % entre filas consecutivas (para series temporales)
+      - top_3_concentracion: qué % del total acumulan las 3 primeras filas
+      - outliers: filas cuyo valor supera media + 2*std en alguna columna numérica
+      - min_max: valor mínimo y máximo por columna numérica
+      - gaps_temporales: índices donde el valor cae a 0 (posibles ausencias)
+    """
+    import statistics
+
+    cols = resultado.get('columns', [])
+    rows = resultado.get('rows', [])
+
+    if not cols or not rows:
+        return {}
+
+    # Identificar columnas numéricas
+    primera = dict(zip(cols, rows[0]))
+    cols_num = [c for c, v in primera.items() if isinstance(v, (int, float))]
+    col_cat  = next((c for c, v in primera.items() if isinstance(v, str)), None)
+
+    if not cols_num:
+        return {}
+
+    metricas = {}
+
+    for col in cols_num:
+        valores = []
+        for row in rows:
+            rd = dict(zip(cols, row))
+            v  = rd.get(col)
+            valores.append(float(v) if isinstance(v, (int, float)) else 0.0)
+
+        total = sum(valores)
+        n     = len(valores)
+
+        # Total general
+        metricas.setdefault('totales', {})[col] = round(total, 2)
+
+        # Min / Max con etiqueta de categoría si existe
+        idx_max = valores.index(max(valores))
+        idx_min = valores.index(min(valores))
+        label_max = str(dict(zip(cols, rows[idx_max])).get(col_cat, idx_max)) if col_cat else str(idx_max)
+        label_min = str(dict(zip(cols, rows[idx_min])).get(col_cat, idx_min)) if col_cat else str(idx_min)
+        metricas.setdefault('min_max', {})[col] = {
+            'max': {'valor': round(max(valores), 2), 'en': label_max},
+            'min': {'valor': round(min(valores), 2), 'en': label_min},
+        }
+
+        # Concentración top-3
+        if total > 0 and n >= 3:
+            top3_suma = sum(sorted(valores, reverse=True)[:3])
+            metricas.setdefault('top3_concentracion_pct', {})[col] = round(top3_suma / total * 100, 1)
+
+        # Variaciones % entre filas consecutivas
+        if n >= 2:
+            variaciones = []
+            for i in range(1, n):
+                ant = valores[i - 1]
+                act = valores[i]
+                if ant != 0:
+                    pct = round((act - ant) / abs(ant) * 100, 1)
+                else:
+                    pct = None
+                label = str(dict(zip(cols, rows[i])).get(col_cat, i)) if col_cat else str(i)
+                variaciones.append({'en': label, 'variacion_pct': pct})
+            metricas.setdefault('variaciones_pct', {})[col] = variaciones
+
+        # Outliers: filas con valor > media + 2*std o < media - 2*std
+        if n >= 4:
+            try:
+                media = statistics.mean(valores)
+                std   = statistics.stdev(valores)
+                outs  = []
+                for i, v in enumerate(valores):
+                    if std > 0 and abs(v - media) > 2 * std:
+                        label = str(dict(zip(cols, rows[i])).get(col_cat, i)) if col_cat else str(i)
+                        outs.append({
+                            'en':    label,
+                            'valor': round(v, 2),
+                            'desviaciones_std': round((v - media) / std, 1),
+                        })
+                if outs:
+                    metricas.setdefault('outliers', {})[col] = outs
+            except statistics.StatisticsError:
+                pass
+
+        # Gaps: posiciones con valor 0 (ausencias en series temporales)
+        gaps = []
+        for i, v in enumerate(valores):
+            if v == 0:
+                label = str(dict(zip(cols, rows[i])).get(col_cat, i)) if col_cat else str(i)
+                gaps.append(label)
+        if gaps:
+            metricas.setdefault('gaps_valor_cero', {})[col] = gaps
+
+    return metricas
+
+
+# ---------------------------------------------------------------------------
+# Agente analista con loop de consultas complementarias
+# ---------------------------------------------------------------------------
+
+MAX_RONDAS_ANALISTA = 3
+
+def agente_analista(
+    pregunta: str,
+    resultado_inicial: dict,
+    sql_inicial: str,
+    system_gen: str,
+    system_val: str,
+) -> dict:
+    """
+    Ejecuta el análisis profundo sobre los datos.
+    Puede pedir hasta MAX_RONDAS_ANALISTA consultas adicionales al generador.
+
+    Retorna el JSON estructurado final del analista:
+    {
+      "estado": "completo",
+      "patrones": [...],
+      "anomalias": [...],
+      "hipotesis": [...],
+      "datos_usados": [...],
+      "conclusion": "...",
+      "preguntas_sugeridas": [...]
+    }
+    """
+    system_analista = leer_instrucciones('analista.md')
+    # Extraer solo la sección de instrucciones del system prompt
+    m = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*)', system_analista, re.DOTALL)
+    system_analista = m.group(1).strip() if m else system_analista
+
+    # Acumular todos los datos a través de las rondas
+    datos_acumulados = [
+        {
+            'ronda':       0,
+            'descripcion': 'Consulta inicial del usuario',
+            'sql':         sql_inicial,
+            'resultado':   resultado_inicial,
+        }
+    ]
+
+    for ronda in range(MAX_RONDAS_ANALISTA + 1):
+        # Pre-computar métricas sobre el resultado más reciente
+        resultado_reciente = datos_acumulados[-1]['resultado']
+        metricas = pre_computar_metricas(resultado_reciente)
+
+        # Construir prompt para el analista
+        prompt = f"""Pregunta original del usuario: "{pregunta}"
+
+=== DATOS DISPONIBLES ===
+
+"""
+        for d in datos_acumulados:
+            prompt += f"--- Ronda {d['ronda']}: {d['descripcion']} ---\n"
+            prompt += f"SQL usado:\n{d['sql']}\n\n"
+            prompt += f"Resultado ({d['resultado'].get('total_filas', 0)} filas):\n"
+            prompt += json.dumps({
+                'columns': d['resultado'].get('columns', []),
+                'rows':    d['resultado'].get('rows', [])[:50],  # máx 50 filas al LLM
+            }, ensure_ascii=False, indent=2)
+            prompt += '\n\n'
+
+        prompt += f"""=== MÉTRICAS PRE-COMPUTADAS (última ronda) ===
+{json.dumps(metricas, ensure_ascii=False, indent=2)}
+
+=== INSTRUCCIÓN ===
+"""
+        if ronda >= MAX_RONDAS_ANALISTA:
+            prompt += 'Has alcanzado el límite de rondas. Produce el análisis completo con los datos que tienes. Responde con estado "completo".'
+        else:
+            prompt += (
+                f'Ronda {ronda + 1} de {MAX_RONDAS_ANALISTA} posibles. '
+                'Analiza los datos. Si necesitas más información, responde con estado "necesita_datos". '
+                'Si tienes suficiente para un análisis completo, responde con estado "completo".'
+            )
+
+        print(f'  [{MODELO}] Analista — ronda {ronda + 1}...')
+        respuesta_raw = llamar_llm(system_analista, prompt, temperatura=0.2)
+
+        # Extraer JSON de la respuesta
+        analisis = None
+        bloque = re.search(r'\{.*\}', respuesta_raw, re.DOTALL)
+        if bloque:
+            try:
+                analisis = json.loads(bloque.group(0))
+            except json.JSONDecodeError:
+                pass
+
+        if not analisis:
+            print('  [analista] No se pudo parsear JSON. Usando respuesta cruda.')
+            return {
+                'estado':    'completo',
+                'patrones':  [],
+                'anomalias': [],
+                'hipotesis': [],
+                'datos_usados': [{'descripcion': d['descripcion'], 'filas': d['resultado'].get('total_filas', 0), 'columnas': d['resultado'].get('columns', [])} for d in datos_acumulados],
+                'conclusion': respuesta_raw,
+                'preguntas_sugeridas': [],
+            }
+
+        estado = analisis.get('estado', 'completo')
+
+        if estado == 'completo' or ronda >= MAX_RONDAS_ANALISTA:
+            # Enriquecer con lista de datos usados si no viene incluida
+            if 'datos_usados' not in analisis or not analisis['datos_usados']:
+                analisis['datos_usados'] = [
+                    {
+                        'descripcion': d['descripcion'],
+                        'filas':       d['resultado'].get('total_filas', 0),
+                        'columnas':    d['resultado'].get('columns', []),
+                    }
+                    for d in datos_acumulados
+                ]
+            print(f'  [analista] Análisis completo en ronda {ronda + 1}.')
+            return analisis
+
+        # estado == 'necesita_datos' — pedir consulta complementaria
+        solicitud = analisis.get('consulta_adicional', {})
+        pregunta_adicional = solicitud.get('pregunta', '')
+        contexto_adicional = solicitud.get('contexto', '')
+        razon              = analisis.get('razon', '')
+
+        if not pregunta_adicional:
+            print('  [analista] Pidió datos adicionales pero sin pregunta. Terminando.')
+            analisis['estado'] = 'completo'
+            return analisis
+
+        print(f'  [analista] Solicita datos adicionales (ronda {ronda + 1}): {pregunta_adicional}')
+        print(f'             Razón: {razon}')
+
+        # Generar SQL para la consulta complementaria con contexto enriquecido
+        prompt_gen_adicional = (
+            f'{pregunta_adicional}\n\n'
+            f'Contexto adicional para esta consulta: {contexto_adicional}\n'
+            f'Columnas que se esperan en el resultado: {json.dumps(solicitud.get("columnas_esperadas", []))}'
+        )
+        sql_adicional = generar_sql_y_validar(prompt_gen_adicional, system_gen, system_val)
+
+        print(f'  Ejecutando consulta complementaria...')
+        resultado_adicional = ejecutar_consulta(sql_adicional)
+
+        if not resultado_adicional.get('success'):
+            print(f'  [analista] Error en consulta complementaria: {resultado_adicional.get("error")} — terminando análisis con datos actuales.')
+            analisis['estado'] = 'completo'
+            if 'datos_usados' not in analisis:
+                analisis['datos_usados'] = []
+            return analisis
+
+        print(f'  Complementaria OK: {resultado_adicional.get("total_filas", 0)} filas obtenidas.')
+        datos_acumulados.append({
+            'ronda':       ronda + 1,
+            'descripcion': pregunta_adicional,
+            'sql':         sql_adicional,
+            'resultado':   resultado_adicional,
+        })
+
+    # Nunca debería llegar aquí, pero por seguridad:
+    return {'estado': 'completo', 'conclusion': 'Análisis completado.', 'patrones': [], 'anomalias': [], 'hipotesis': [], 'datos_usados': [], 'preguntas_sugeridas': []}
+
+
 def procesar_consulta(pregunta: str):
     instrucciones_gen = leer_instrucciones('generador_consultas.md')
     instrucciones_val = leer_instrucciones('validador.md')
@@ -1380,6 +1759,14 @@ def procesar_consulta(pregunta: str):
     system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + _reglas_gen()
     system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + _reglas_val()
     system_red = extraer_system_red.group(1).strip() if extraer_system_red else instrucciones_red
+
+    # ------------------------------------------------------------------
+    # Detectar comando /analisis y limpiar el prompt
+    # ------------------------------------------------------------------
+    forzar_analisis, pregunta_limpia = _es_comando_analisis(pregunta)
+    if forzar_analisis:
+        print('\n[MODO] Análisis profundo activado via /analisis')
+        pregunta = pregunta_limpia
 
     sql_final = generar_sql_y_validar(pregunta, system_gen, system_val)
 
@@ -1430,8 +1817,48 @@ def procesar_consulta(pregunta: str):
         print(f'[{MODELO}] Exportando a Excel...')
         ruta_excel = exportar_excel_desde_resultado(resultado, pregunta)
 
+    # ------------------------------------------------------------------
+    # Agente analista (si aplica)
+    # ------------------------------------------------------------------
+    analisis_profundo = None
+    activar_analista = forzar_analisis or es_intencion_analisis(pregunta, resultado)
+
+    if activar_analista:
+        modo = '/analisis' if forzar_analisis else (
+            'LLM' if CLASSIFY_INFERENCE == 'YES' else 'regex'
+        )
+        print(f'\n[ANALISTA] Activado ({modo}). Iniciando análisis profundo...')
+        print('=' * 60)
+        analisis_profundo = agente_analista(
+            pregunta=pregunta,
+            resultado_inicial=resultado,
+            sql_inicial=sql_final,
+            system_gen=system_gen,
+            system_val=system_val,
+        )
+        print('=' * 60)
+        print('[ANALISTA] Análisis completado.\n')
+
+    # ------------------------------------------------------------------
+    # Redactar respuesta final
+    # ------------------------------------------------------------------
     print(f'[{MODELO}] Redactando respuesta...')
     prompt_red = json.dumps(resultado, ensure_ascii=False, indent=2)
+
+    if analisis_profundo:
+        prompt_red += f'\n\n### Análisis Profundo del Agente Analista\n'
+        prompt_red += json.dumps(analisis_profundo, ensure_ascii=False, indent=2)
+        prompt_red += (
+            '\n\nEl análisis profundo ya está hecho. Tu tarea es redactarlo de forma clara y natural. '
+            'Estructura la respuesta así:\n'
+            '1. Resumen de los datos (tabla si aplica)\n'
+            '2. Patrones y anomalías encontrados\n'
+            '3. Hipótesis y causas probables\n'
+            '4. Conclusión\n'
+            '5. Preguntas sugeridas para profundizar (si las hay)\n'
+            'No repitas los números crudos del JSON — intégralos en texto fluido.'
+        )
+
     if excel_auto:
         prompt_red += f'\n\n### Nota de datos completos\nLa consulta devolvio {total_filas} filas en total. Se muestran las primeras 50 para la respuesta. El archivo completo se ha exportado a Excel: {ruta_excel}\nIncluir en la respuesta: "Mostrando las primeras 50 de {total_filas} filas. El listado completo se exportó a Excel en: {ruta_excel}"'
     if tabla_markdown:
@@ -1440,6 +1867,7 @@ def procesar_consulta(pregunta: str):
         prompt_red += '\n\n### Grafico generado\n' + '\n'.join(imagenes_chat) + '\n\nSi hay un grafico, incluirlo en la respuesta como imagen markdown.'
     if ruta_excel and not excel_auto:
         prompt_red += f'\n\n### Archivo Excel generado\nEl archivo Excel se ha guardado en: {ruta_excel}\nInformar al usuario que puede descargarlo desde esa ruta.'
+
     respuesta_final = llamar_llm(
         system_red,
         prompt_red,
@@ -1454,6 +1882,7 @@ def procesar_consulta(pregunta: str):
 def main():
     if len(sys.argv) < 2:
         print('Uso: python orquestador.py "tu pregunta en lenguaje natural"')
+        print('     python orquestador.py "/analisis <pregunta>"  — análisis profundo')
         sys.exit(1)
 
     pregunta = sys.argv[1]
