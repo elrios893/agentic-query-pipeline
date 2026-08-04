@@ -158,21 +158,24 @@ def es_intencion_excel(texto: str) -> bool:
 # Mapeo oficial: Bloque Informe → Tipo(s) de Gráfico Esperado(s)
 # ---------------------------------------------------------------------------
 MAPEO_BLOQUES_GRAFICOS = {
-    'A': None,  # Resumen ejecutivo: sin gráfico (números directos)
-    'B': None,  # KPIs principales: sin gráfico (solo números)
-    'C': 'barras_agrupadas',  # Variación vs mes anterior: comparación de períodos
-    'D': ['barras_horizontales', 'torta'],  # Geográfico (departamentos/ciudades): ranking o participación
+    'A': None,  # Encabezado: sin gráfico
+    'B': None,  # Resumen ejecutivo: sin gráfico (bullets)
+    'C': 'barras_agrupadas',  # Métricas/variación vs período anterior
+    'D': ['barras_horizontales', 'torta'],  # Geográfico: ranking o participación
     'E': 'barras_horizontales',  # Dependencias: ranking
     'F': 'barras_horizontales',  # Tiendas: ranking
-    'G': ['barras_verticales', 'barras_horizontales'],  # Línea de producto: distribución o ranking
-    'H': 'barras_verticales',  # Producto (referencias): distribución por cantidad
-    'I': 'barras_horizontales',  # Análisis de referencias: ranking top
-    'J': 'barras_verticales',  # Tallas: distribución (XS, S, M, L, XL, XXL)
-    'K': 'linea',  # Evolución temporal: SIEMPRE línea (fechas, días, semanas)
-    'L': 'barras_verticales',  # Tiendas activas: barras simples
+    'G': ['barras_verticales', 'barras_horizontales'],  # Línea de producto
+    'H': 'barras_verticales',  # Producto (DESC_ITEM)
+    'I': 'barras_horizontales',  # Referencias: ranking top
+    'J': 'barras_verticales',  # Tallas: distribución
+    'K': 'linea',  # Evolución temporal: siempre línea
+    'L': 'barras_verticales',  # Tiendas activas
     'M': None,  # Alertas: sin gráfico
-    'N': None,  # Anexo de datos completos: tabla de datos, sin gráfico
-    'O': None,  # Tablas interactivas: ya son markdown tables, sin gráfico PNG
+    'N': None,  # Anexo de datos: sin gráfico
+    'O': None,  # Tablas interactivas: sin gráfico PNG
+    'P': 'barras_horizontales',  # Devoluciones: tasa % por grupo (top 10)
+    'Q': ['barras_horizontales', 'barras_agrupadas'],  # Categorías: mix línea o comparación períodos
+    'R': ['barras_verticales', 'linea'],  # Precios: distribución rangos o evolución precio promedio
 }
 
 def leer_instrucciones(archivo: str) -> str:

@@ -50,7 +50,7 @@ El orden de los bloques sigue el principio **macro → micro**: primero lo mas a
 ## Reglas de negocio (siempre aplican)
 
 1. Fuente de ventas: `TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'`. El campo `SIGNO` NO es obligatorio filtrar.
-2. DESC_MOVIMIENTO solo tiene 3 valores válidos: `'VENTAS POS'`, `'CAMBIOS DE MERCANCIA ACLIENTE'`, `'DEVOLUCIÓN AL PROVEEDOR'`.
+2. Devoluciones de cliente: `TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE'` — signo `+` (entrada al almacén). Es el único movimiento que representa devolución real del consumidor final. `'DEVOLUCION AL PROVEEDOR'` es distinto: es devolución hacia el proveedor, no del cliente.
 3. Valor de venta: `"CANTIDAD" * "PVP"`. Nunca `"PVP LISTA"` para tiendas individuales.
 4. `"PVP LISTA"` solo cuando la pregunta sea sobre macroclientes/cadenas.
 5. Fechas: `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`. Nunca `::DATE` ni `'DD/MM/YYYY'` sin FM.
@@ -125,6 +125,9 @@ K  → Evolucion en el tiempo        (cuando aplique)
 L  → Estado de tiendas/portafolio  (cuando aplique)
 M  → Alertas y hallazgos           (al final, informes ejecutivos)
 N  → Anexo de datos completos      (cuando el usuario pide detalle completo)
+P  → Devoluciones y cambios        (cuando el usuario pide analisis de devoluciones o cambios)
+Q  → Categorias y mix de producto  (cuando el usuario pide analisis por categoria/grupo)
+R  → Distribucion de precios       (cuando el usuario pide analisis de precios o rangos)
 ```
 
 ---
@@ -429,6 +432,238 @@ Indicar: "Datos extraidos de tablas `ventas_2025` / `ventas_2026` — CreytexToS
 
 ---
 
+### BLOQUE P — Devoluciones y cambios
+
+**Cuando usar:** cuando el usuario pide análisis de devoluciones, cambios, retornos, o cuando el bloque M detecta una tasa de cambios inusualmente alta en algún segmento.
+
+**Movimiento fuente:** `TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE'` — único movimiento que representa devolución real del consumidor final (signo `+`, entrada al almacén). NO usar `DEVOLUCION AL PROVEEDOR`.
+
+**Tasa de devolución:** `cambios / ventas_pos * 100`. Umbral de alerta: tasa > 5% en un grupo o referencia merece mención explícita.
+
+#### P.1 Resumen global de cambios
+
+| Métrica | Valor |
+|---|---:|
+| Total cambios (unidades) | |
+| Total ventas POS (unidades) | |
+| Tasa global de cambios | |
+
+**Datos necesarios:**
+```sql
+SELECT
+    SUM(CASE WHEN TRIM("DESC_MOVIMIENTO") = 'VENTAS POS' THEN "CANTIDAD" ELSE 0 END) AS ventas,
+    SUM(CASE WHEN TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE' THEN ABS("CANTIDAD") ELSE 0 END) AS cambios
+FROM ventas_2026
+WHERE TRIM("DESC_MOVIMIENTO") IN ('VENTAS POS', 'CAMBIOS DE MERCANCIA ACLIENTE');
+```
+
+#### P.2 Tasa de cambios por GRUPO
+
+Ordenar por tasa descendente. Alertar si tasa > 5%.
+
+| Grupo | Ventas | Cambios | Tasa % | Alerta |
+|---|---:|---:|---:|---|
+
+**Datos necesarios:**
+```sql
+SELECT
+    TRIM("GRUPO") AS grupo,
+    SUM(CASE WHEN TRIM("DESC_MOVIMIENTO") = 'VENTAS POS' THEN "CANTIDAD" ELSE 0 END) AS ventas,
+    SUM(CASE WHEN TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE' THEN ABS("CANTIDAD") ELSE 0 END) AS cambios
+FROM ventas_2026
+WHERE TRIM("DESC_MOVIMIENTO") IN ('VENTAS POS', 'CAMBIOS DE MERCANCIA ACLIENTE')
+GROUP BY 1
+HAVING SUM(CASE WHEN TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE' THEN ABS("CANTIDAD") ELSE 0 END) > 0
+ORDER BY cambios DESC;
+```
+
+#### P.3 Tasa de cambios por COLOR
+
+Identifica colores con alta tasa — puede indicar diferencia entre foto/realidad del producto.
+
+| Color | Ventas | Cambios | Tasa % |
+|---|---:|---:|---:|
+
+**Datos necesarios:** misma query de P.2 cambiando `GROUP BY TRIM("GRUPO")` por `GROUP BY TRIM("COLOR")`.
+
+#### P.4 Tasa de cambios por TALLA
+
+Tallas extremas (XS, XXL) o mal representadas en inventario suelen tener más cambios.
+
+| Talla | Ventas | Cambios | Tasa % |
+|---|---:|---:|---:|
+
+**Datos necesarios:** `GROUP BY TRIM("TALLA")`.
+
+#### P.5 Tasa de cambios por rango de precio
+
+Prendas más caras tienen más fricción de compra y potencialmente más cambios.
+
+| Rango PVP | Ventas | Cambios | Tasa % |
+|---|---:|---:|---:|
+
+**Datos necesarios:**
+```sql
+SELECT
+    CASE WHEN "PVP" < 50000 THEN '<50k'
+         WHEN "PVP" < 100000 THEN '50k-100k'
+         WHEN "PVP" < 150000 THEN '100k-150k'
+         ELSE '>150k' END AS rango_precio,
+    SUM(CASE WHEN TRIM("DESC_MOVIMIENTO") = 'VENTAS POS' THEN "CANTIDAD" ELSE 0 END) AS ventas,
+    SUM(CASE WHEN TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE' THEN ABS("CANTIDAD") ELSE 0 END) AS cambios
+FROM ventas_2026
+WHERE TRIM("DESC_MOVIMIENTO") IN ('VENTAS POS', 'CAMBIOS DE MERCANCIA ACLIENTE')
+GROUP BY 1 ORDER BY MIN("PVP");
+```
+
+#### P.6 Tiendas con mayor tasa de cambios
+
+Tasa alta en una tienda puede revelar problemas de asesoría al cliente o de calidad del stock local.
+
+| Tienda | Departamento | Ventas | Cambios | Tasa % |
+|---|---|---:|---:|---:|
+
+**Datos necesarios:** `GROUP BY TRIM("DESC_DEPENDENCIA"), TRIM("DEPARTAMENTO")`.
+
+**Grafico sugerido:** `barras_horizontales` con tasa % por grupo (bloque P.2), top 10.
+
+---
+
+### BLOQUE Q — Categorías y mix de producto
+
+**Cuando usar:** cuando el usuario pide análisis por categoría, grupo de producto, o composición del portafolio. También relevante en informes generales para mostrar qué categorías impulsan las ventas.
+
+**Jerarquía de producto disponible:**
+- `LINEA` — nivel alto (ej: `10 - Dama Exterior`, `11 - Dama Deportivo`, `13 - Hombre Deportivo`)
+- `GRUPO` — nivel de tipo de prenda dentro de la línea (ej: `02 - Camiseta manga corta`, `40 - Pantalones`)
+- `PERFIL_PRENDA` — clasificación física (Superior, Inferior, Conjunto, Enterizo)
+- `ESTILO_ITEM` — estilo específico (Camiseta, Pantalones, Blusa, Vestido...)
+
+#### Q.1 Mix por LINEA
+
+Participación de cada línea en el total del período.
+
+| Línea | Unidades | Valor COP | % del total |
+|---|---:|---:|---:|
+
+Insertar gráfico `barras_horizontales` o `torta` (si ≤5 líneas con participación relevante).
+
+**Datos necesarios:** `GROUP BY TRIM("LINEA") ORDER BY ventas DESC`.
+
+#### Q.2 Mix por GRUPO dentro de cada LINEA
+
+Para cada línea relevante, mostrar sus grupos con participación.
+
+| Línea | Grupo | Unidades | % dentro de la línea |
+|---|---|---:|---:|
+
+**Datos necesarios:**
+```sql
+SELECT
+    TRIM("LINEA") AS linea,
+    TRIM("GRUPO") AS grupo,
+    SUM("CANTIDAD") AS unidades,
+    ROUND(CAST(SUM("CANTIDAD") * 100.0 /
+        NULLIF(SUM(SUM("CANTIDAD")) OVER (PARTITION BY TRIM("LINEA")), 0) AS numeric), 1) AS pct_linea
+FROM ventas_2026
+WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+GROUP BY 1, 2
+ORDER BY 1, 3 DESC;
+```
+
+#### Q.3 Concentración de categorías
+
+Si los 3 grupos más vendidos concentran más del 70% del total, la línea es vulnerable a quiebres de stock de esos grupos específicos.
+
+| Top 3 grupos | Unidades acumuladas | % del total |
+|---|---:|---:|
+
+#### Q.4 Grupos con crecimiento y grupos en declive (requiere dos períodos)
+
+Solo incluir si hay datos de período anterior disponibles.
+
+| Grupo | Período anterior | Período actual | Variación % |
+|---|---:|---:|---:|
+
+**Datos necesarios:** query con CASE WHEN para ambos períodos, `GROUP BY TRIM("GRUPO")`.
+
+**Grafico sugerido:** `barras_agrupadas` para Q.4 (comparación de períodos), `barras_horizontales` para Q.1.
+
+---
+
+### BLOQUE R — Distribución de precios
+
+**Cuando usar:** cuando el usuario pide análisis de precios, rangos de precio, o en informes ejecutivos donde el mix de precio es relevante para entender causas de variaciones en valor de ventas.
+
+**Contexto de datos:** PVP va de $12,900 a $169,990. El 80% de las ventas ocurre entre $50k y $150k. `PVP HIST` no está disponible. `PVP LISTA` es el precio de macroclientes — no usar para análisis de precio de tienda.
+
+#### R.1 Distribución de ventas por rango de precio
+
+| Rango PVP | Unidades | % unidades | Valor COP | % valor |
+|---|---:|---:|---:|---:|
+| < $50,000 | | | | |
+| $50,000 – $100,000 | | | | |
+| $100,000 – $150,000 | | | | |
+| > $150,000 | | | | |
+
+Insertar gráfico `barras_verticales` con distribución de unidades por rango.
+
+**Datos necesarios:**
+```sql
+SELECT
+    CASE WHEN "PVP" < 50000  THEN '< 50k'
+         WHEN "PVP" < 100000 THEN '50k-100k'
+         WHEN "PVP" < 150000 THEN '100k-150k'
+         ELSE '> 150k' END AS rango_precio,
+    SUM("CANTIDAD") AS unidades,
+    ROUND(CAST(SUM("CANTIDAD") * 100.0 / NULLIF(SUM(SUM("CANTIDAD")) OVER (), 0) AS numeric), 1) AS pct_uds,
+    SUM("CANTIDAD" * "PVP") AS valor_cop
+FROM ventas_2026
+WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+GROUP BY 1 ORDER BY MIN("PVP");
+```
+
+#### R.2 Precio promedio ponderado por LINEA
+
+Detecta si una línea sube o baja de precio promedio entre períodos — síntoma de cambios de mix o de descuentos.
+
+| Línea | Unidades | PVP promedio ponderado | Valor COP |
+|---|---:|---:|---:|
+
+**Datos necesarios:**
+```sql
+SELECT
+    TRIM("LINEA") AS linea,
+    SUM("CANTIDAD") AS unidades,
+    ROUND(CAST(SUM("CANTIDAD" * "PVP") / NULLIF(SUM("CANTIDAD"), 0) AS numeric), 0) AS pvp_promedio_ponderado,
+    SUM("CANTIDAD" * "PVP") AS valor_cop
+FROM ventas_2026
+WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+GROUP BY 1 ORDER BY 4 DESC;
+```
+
+#### R.3 Relación precio-devolución
+
+¿Las prendas más caras tienen más cambios? Cruza rangos de precio con tasa de cambios.
+
+| Rango PVP | Ventas | Cambios | Tasa % |
+|---|---:|---:|---:|
+
+**Datos necesarios:** misma estructura que P.5 — incluir aquí si ya existe el bloque P, o calcular nuevamente.
+
+#### R.4 Evolución del precio promedio ponderado en el tiempo (requiere período)
+
+Si en el período analizado el precio promedio ponderado cae, puede ser síntoma de descuentos, mayor proporción de prendas baratas, o cambio de mix de producto.
+
+| Mes / Semana | Unidades | PVP promedio ponderado | Variación vs anterior |
+|---|---:|---:|---:|
+
+**Datos necesarios:** `GROUP BY "Mes"` o `GROUP BY TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')` con cálculo de pvp ponderado.
+
+**Grafico sugerido:** `barras_verticales` para R.1 (distribución), `linea` para R.4 (evolución del precio promedio).
+
+---
+
 ## Graficos de apoyo
 
 Para los bloques D, E, F, G, H, I, J, K el pipeline puede generar graficos automaticamente.
@@ -451,6 +686,9 @@ Para los bloques D, E, F, G, H, I, J, K el pipeline puede generar graficos autom
 | G — Linea | `barras_verticales` o `barras_horizontales` | Despues de tabla |
 | J — Talla | `barras_verticales` | Despues de tabla |
 | K — Evolucion | `linea` | Despues de tabla |
+| P — Devoluciones | `barras_horizontales` (tasa % por grupo) | Despues de tabla P.2 |
+| Q — Categorias | `barras_horizontales` (mix linea) o `barras_agrupadas` (comparacion) | Despues de tabla Q.1 o Q.4 |
+| R — Precios | `barras_verticales` (distribucion) o `linea` (evolucion precio promedio) | Despues de tabla R.1 o R.4 |
 
 ---
 
@@ -467,3 +705,10 @@ Para los bloques D, E, F, G, H, I, J, K el pipeline puede generar graficos autom
 | "cuantas tiendas estan activas" | A + L |
 | "analisis de referencias" | A + I (con subseccion I.1) |
 | "informe detallado con todo" | A + B + C + D + E + F + G + H + I + J + K + L + M + N |
+| "analisis de devoluciones" | A + P + opcionalmente M |
+| "cuantos cambios hubo en caballero" | A + P (filtrado por LINEA) |
+| "analisis por categoria o grupo" | A + Q + opcionalmente G |
+| "como se distribuyen las categorias" | A + Q |
+| "analisis de precios" | A + R |
+| "como va el precio promedio" | A + R.2 + R.4 |
+| "informe completo con devoluciones y precios" | A + B + C + D + G + J + K + P + Q + R + M |
