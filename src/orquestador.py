@@ -1385,6 +1385,21 @@ El gráfico anterior muestra que Antioquia domina...
     print('=' * 60)
     print(md_informe)
 
+    # Retornar dict estructurado para el servidor
+    return {
+        'tipo':            'informe',
+        'respuesta':       md_informe,
+        'ruta_md':         str(ruta_md),
+        'ruta_docx':       str(ruta_docx),
+        'bloques':         plan.get('bloques', []),
+        'periodo':         '',   # el servidor puede extraerlo del md si necesita
+        'resultado_sql':   None, # informes no exponen un único df
+        'sql_usada':       None,
+        'imagenes':        [],
+        'ruta_excel':      '',
+        'analisis':        None,
+    }
+
 # ---------------------------------------------------------------------------
 # Clasificador de intención analítica
 # ---------------------------------------------------------------------------
@@ -1750,7 +1765,32 @@ def agente_analista(
     return {'estado': 'completo', 'conclusion': 'Análisis completado.', 'patrones': [], 'anomalias': [], 'hipotesis': [], 'datos_usados': [], 'preguntas_sugeridas': []}
 
 
-def procesar_consulta(pregunta: str):
+def procesar_consulta(pregunta: str, contexto_refinamiento: dict | None = None):
+    """
+    Pipeline principal de consulta.
+
+    Args:
+        pregunta: pregunta del usuario en lenguaje natural
+        contexto_refinamiento: dict opcional con contexto de sesión para REFINAMIENTO.
+            {
+              'sql_anterior':      str,   SQL de la consulta previa
+              'columnas_previas':  list,  columnas del resultado previo
+              'periodo_previo':    str,   período detectado en la consulta previa
+              'filtros_previos':   list,  filtros activos de la consulta previa
+              'descripcion_df':    str,   descripción del df anterior
+            }
+
+    Retorna:
+        {
+          'tipo':         'consulta',
+          'respuesta':    str,           texto final para el usuario
+          'resultado_sql': dict,         {columns, rows, total_filas}
+          'sql_usada':    str,
+          'imagenes':     list[str],     rutas markdown de imágenes
+          'ruta_excel':   str,
+          'analisis':     dict | None,
+        }
+    """
     instrucciones_gen = leer_instrucciones('generador_consultas.md')
     instrucciones_val = leer_instrucciones('validador.md')
     instrucciones_red = leer_instrucciones('redactor_respuesta.md')
@@ -1762,6 +1802,26 @@ def procesar_consulta(pregunta: str):
     system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + _reglas_gen()
     system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + _reglas_val()
     system_red = extraer_system_red.group(1).strip() if extraer_system_red else instrucciones_red
+
+    # ------------------------------------------------------------------
+    # Inyectar contexto de refinamiento en el generador
+    # ------------------------------------------------------------------
+    if contexto_refinamiento:
+        ctx = contexto_refinamiento
+        contexto_str = f"""
+### Contexto de la consulta anterior (REFINAMIENTO)
+El usuario está refinando o extendiendo una consulta previa. Usa este contexto:
+- SQL anterior: {ctx.get('sql_anterior', '')}
+- Columnas del resultado previo: {ctx.get('columnas_previas', [])}
+- Período detectado: {ctx.get('periodo_previo', '')}
+- Filtros activos: {ctx.get('filtros_previos', [])}
+- Descripción: {ctx.get('descripcion_df', '')}
+
+Genera una nueva SQL que incorpore el refinamiento solicitado por el usuario,
+manteniendo los filtros base del contexto anterior a menos que el usuario
+explícitamente pida cambiarlos.
+"""
+        system_gen = system_gen + contexto_str
 
     # ------------------------------------------------------------------
     # Detectar comando /analisis y limpiar el prompt
@@ -1778,7 +1838,15 @@ def procesar_consulta(pregunta: str):
 
     if not resultado.get('success'):
         print(f'\nError al ejecutar: {resultado.get("error")}')
-        sys.exit(1)
+        return {
+            'tipo':          'error',
+            'respuesta':     f'Error al ejecutar la consulta: {resultado.get("error")}',
+            'resultado_sql': None,
+            'sql_usada':     sql_final,
+            'imagenes':      [],
+            'ruta_excel':    '',
+            'analisis':      None,
+        }
 
     total_filas = resultado.get('total_filas', 0)
     print(f'Resultado: {total_filas} fila(s) obtenidas.\n')
@@ -1881,6 +1949,17 @@ def procesar_consulta(pregunta: str):
     print('RESPUESTA')
     print('=' * 60)
     print(respuesta_final)
+
+    return {
+        'tipo':          'consulta',
+        'respuesta':     respuesta_final,
+        'resultado_sql': resultado,
+        'sql_usada':     sql_final,
+        'imagenes':      imagenes_chat,
+        'ruta_excel':    ruta_excel,
+        'analisis':      analisis_profundo,
+    }
+
 
 def main():
     if len(sys.argv) < 2:
