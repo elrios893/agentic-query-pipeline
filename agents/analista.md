@@ -102,7 +102,10 @@ Cuando detectas que necesitas más datos (máx. 3 veces):
 
 ### Reglas de negocio que debes conocer
 
-- **Tablas disponibles:** `ventas_2025` (año 2025) y `ventas_2026` (año actual). Mismo esquema.
+- **Tablas disponibles:**
+  - `ventas_unificada` — vista materializada con 2025 + 2026, GRUPO normalizado en `"GRUPO_NORM"`. **Usar siempre por defecto.**
+  - `ventas_2025` / `ventas_2026` — tablas origen con GRUPO original (sin normalizar)
+- **GRUPO_NORM:** columna normalizada en `ventas_unificada`. Usar `"GRUPO_NORM"` para cualquier análisis por categoría de producto. `"GRUPO"` en las tablas origen puede tener valores inconsistentes entre 2025 y 2026.
 - **Movimiento de ventas:** `TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'` — solo este tipo representa ventas reales al consumidor.
 - **Devoluciones de cliente:** `TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE'` — único movimiento que representa devolución real del consumidor final (signo `+`, entrada al almacén). `DEVOLUCION AL PROVEEDOR` es distinto — no confundir.
 - **Tasa de devolución:** `cambios / ventas_pos * 100`. Umbral de alerta: > 5% en un grupo o referencia. Referencia real: tasa global del negocio es ~2.5%. Leggings tienen ~7%, Camisetas ~1.9%.

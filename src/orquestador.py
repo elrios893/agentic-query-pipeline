@@ -79,13 +79,12 @@ def _reglas_gen() -> str:
 
 ### Contexto temporal
 - Hoy es {datetime.now().strftime('%d/%m/%Y')}.
-- La tabla ventas_2026 SOLO contiene datos del año {anio}.
-- La tabla ventas_2025 SOLO contiene datos del año 2025.
-- Ambas tablas tienen el mismo esquema de columnas.
-- Si el usuario pregunta por 2025 usa ventas_2025. Si no especifica año, usa ventas_2026.
-- NUNCA uses FROM ventas (sin sufijo de año), esa tabla no existe.
-- Cuando el usuario mencione un dia o mes sin especificar año, SIEMPRE usa {anio}.
-- NUNCA uses ningun otro año.
+- TABLA PRINCIPAL: ventas_unificada — vista materializada que une ventas_2025 y ventas_2026 con GRUPO normalizado.
+  - Filtrar por año con WHERE "Año" = {anio} (2026) o WHERE "Año" = 2025.
+  - Columna "GRUPO_NORM": GRUPO estandarizado desde la tabla de segmentación. USAR SIEMPRE en lugar de "GRUPO" cuando la tabla sea ventas_unificada.
+- ventas_2025 y ventas_2026 solo usar si se necesita el dato crudo sin normalizar.
+- NUNCA uses FROM ventas sin sufijo ni _unificada.
+- Cuando el usuario mencione un dia o mes sin especificar año, SIEMPRE usa {anio} con ventas_unificada.
 
 ### Reglas adicionales obligatorias
 1. Siempre usa comillas dobles en TODOS los nombres de columna.
@@ -123,7 +122,8 @@ def _reglas_val() -> str:
 13. NO rechazar dos veces por el mismo problema. Si el generador ya corrigio un error en el intento anterior, aprobarlo aunque queden imperfecciones menores de estilo.
 14. CAST para ROUND: si la consulta usa ROUND() sobre una operacion aritmetica (division, multiplicacion), DEBE incluir CAST(...AS numeric). Si ves ROUND((... * 100) / ..., N) sin CAST → RECHAZAR. La forma correcta es ROUND(CAST((... * 100) / ... AS numeric), N).
 15. Deteccion de Cartesian product en comparaciones de periodos: si la consulta contiene FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN combinado con EXTRACT(DAY FROM ...) = EXTRACT(DAY FROM ...) u otro EXTRACT en la condicion ON → RECHAZAR. Feedback: "Para comparar periodos (enero vs febrero), NO uses JOINs. Usa UNA tabla con multiples CASE WHEN para cada periodo: SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero".
-16. LIMIT obligatorio en subqueries con "día/fecha de mayor venta": si la consulta detecta un patrón como COALESCE(...SELECT...GROUP BY fecha...LIMIT 1), DEBE tener LIMIT N en la query principal. Sin LIMIT → RECHAZAR. Mensaje: "Falta LIMIT en la query principal. Subqueries que buscan 'día de mayor venta' requieren LIMIT obligatorio para evitar procesar todas las filas. Agregar LIMIT 10 (o el número que pidió el usuario) antes del punto y coma final"."""
+16. LIMIT obligatorio en subqueries con "día/fecha de mayor venta": si la consulta detecta un patrón como COALESCE(...SELECT...GROUP BY fecha...LIMIT 1), DEBE tener LIMIT N en la query principal. Sin LIMIT → RECHAZAR. Mensaje: "Falta LIMIT en la query principal. Subqueries que buscan 'día de mayor venta' requieren LIMIT obligatorio para evitar procesar todas las filas. Agregar LIMIT 10 (o el número que pidió el usuario) antes del punto y coma final".
+17. Tabla ventas_unificada: es una tabla válida. Aceptar consultas que usen FROM ventas_unificada. Si usa "GRUPO" en lugar de "GRUPO_NORM" sobre ventas_unificada, ADVERTIR en el feedback pero NO rechazar."""
 
 PATRONES_INFORME = re.compile(
     r'\b(informe|reporte|report|documento|word|docx|'

@@ -50,8 +50,11 @@ El orden de los bloques sigue el principio **macro → micro**: primero lo mas a
 ## Reglas de negocio (siempre aplican)
 
 1. Fuente de ventas: `TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'`. El campo `SIGNO` NO es obligatorio filtrar.
-2. Devoluciones de cliente: `TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE'` — signo `+` (entrada al almacén). Es el único movimiento que representa devolución real del consumidor final. `'DEVOLUCION AL PROVEEDOR'` es distinto: es devolución hacia el proveedor, no del cliente.
-3. Valor de venta: `"CANTIDAD" * "PVP"`. Nunca `"PVP LISTA"` para tiendas individuales.
+2. **Tabla principal: `ventas_unificada`** — vista materializada que une `ventas_2025` y `ventas_2026`. Tiene la columna `"GRUPO_NORM"` (GRUPO normalizado). Filtrar por año con `WHERE "Año" = N`. Usar esta tabla por defecto en todos los bloques.
+3. `ventas_2025` y `ventas_2026` solo usar si el informe explícitamente necesita el dato crudo sin normalizar.
+4. **`"GRUPO_NORM"`**: columna normalizada de categoría de producto en `ventas_unificada`. SIEMPRE usar `"GRUPO_NORM"` en lugar de `"GRUPO"` cuando la tabla sea `ventas_unificada`.
+5. Devoluciones de cliente: `TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE'` — único movimiento que representa devolución real del consumidor final (signo `+`, entrada al almacén). `'DEVOLUCION AL PROVEEDOR'` es distinto: es devolución hacia el proveedor, no del cliente.
+6. Valor de venta: `"CANTIDAD" * "PVP"`. Nunca `"PVP LISTA"` para tiendas individuales.
 4. `"PVP LISTA"` solo cuando la pregunta sea sobre macroclientes/cadenas.
 5. Fechas: `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`. Nunca `::DATE` ni `'DD/MM/YYYY'` sin FM.
 6. Siempre `TRIM()` en `"SIGNO"`, `"DESC_MOVIMIENTO"`, `"DEPARTAMENTO"`, etc.
@@ -434,7 +437,7 @@ Indicar: "Datos extraidos de tablas `ventas_2025` / `ventas_2026` — CreytexToS
 
 ### BLOQUE P — Devoluciones y cambios
 
-**Cuando usar:** cuando el usuario pide análisis de devoluciones, cambios, retornos, o cuando el bloque M detecta una tasa de cambios inusualmente alta en algún segmento.
+**Cuando usar:** cuando este el bloque I, devoluciones, cambios, retornos, o cuando el bloque M detecta una tasa de cambios inusualmente alta en algún segmento.
 
 **Movimiento fuente:** `TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE'` — único movimiento que representa devolución real del consumidor final (signo `+`, entrada al almacén). NO usar `DEVOLUCION AL PROVEEDOR`.
 
@@ -696,7 +699,7 @@ Para los bloques D, E, F, G, H, I, J, K el pipeline puede generar graficos autom
 
 | El usuario pide... | Bloques a usar |
 |--------------------|---------------|
-| "informe completo de ventas" | A + B + C + D + E + F + G + I + J + M |
+| "informe completo de ventas" | A + B + C + D + E + F + G + H + I + J + K + M + P + Q + R |
 | "informe de ventas de enero" | A + B + C + D + K + M |
 | "reporte por tienda" | A + F + opcionalmente M |
 | "como van las ventas por talla" | A + J |
