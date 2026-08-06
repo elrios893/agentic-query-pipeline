@@ -3,9 +3,10 @@ telegram_bot/handlers.py
 Manejadores de eventos del bot de Telegram
 """
 import logging
+import re
 import time
-from typing import Optional
 from pathlib import Path
+from typing import List, Tuple
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.constants import ParseMode
@@ -18,8 +19,60 @@ from telegram_bot.formatters import MessageFormatter, md_a_telegram
 
 logger = logging.getLogger(__name__)
 
+# Raíz del proyecto (un nivel arriba de telegram_bot/)
+BASE_DIR = Path(__file__).resolve().parent.parent
+
 # Cliente API global
 api_client = APIClient(SERVER_URL)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def _extraer_imagenes(respuesta: str, imagenes_campo: list) -> List[Tuple[str, Path]]:
+    """
+    Extrae pares (caption, ruta_absoluta) de imágenes a enviar.
+
+    El servidor devuelve imágenes en dos lugares:
+    - campo 'imagenes': lista de strings "![titulo](reports\\charts\\archivo.png)"
+    - campo 'respuesta': el texto puede contener los mismos ![...](...)
+
+    Ambos usan rutas relativas al BASE_DIR del proyecto.
+    Deduplicamos por nombre de archivo para no enviar dos veces la misma imagen.
+    """
+    vistos = set()
+    resultado = []
+
+    # Regex que captura ![titulo](ruta)
+    patron = re.compile(r'!\[([^\]]*)\]\(([^)]+)\)')
+
+    def procesar(titulo: str, ruta_str: str):
+        # Normalizar separadores de ruta
+        ruta_str = ruta_str.replace('\\', '/')
+        ruta_abs = BASE_DIR / ruta_str
+        nombre = ruta_abs.name
+        if nombre not in vistos and ruta_abs.exists():
+            vistos.add(nombre)
+            resultado.append((titulo or 'Gráfico generado', ruta_abs))
+
+    # 1. Parsear el campo imagenes[]
+    for item in (imagenes_campo or []):
+        m = patron.search(item)
+        if m:
+            procesar(m.group(1), m.group(2))
+        else:
+            # Si es una ruta directa (sin formato markdown)
+            ruta_abs = BASE_DIR / item.replace('\\', '/')
+            if ruta_abs.exists() and ruta_abs.name not in vistos:
+                vistos.add(ruta_abs.name)
+                resultado.append(('Gráfico generado', ruta_abs))
+
+    # 2. Parsear el texto de la respuesta (puede tener imágenes extra, ej: informes)
+    for m in patron.finditer(respuesta):
+        procesar(m.group(1), m.group(2))
+
+    return resultado
 
 
 async def _send_safe(update, text: str) -> None:
@@ -35,7 +88,6 @@ async def _send_safe(update, text: str) -> None:
             disable_web_page_preview=True,
         )
     except Exception:
-        # Fallback: texto plano sin ningún formato
         try:
             await update.message.reply_text(
                 text,
@@ -43,6 +95,22 @@ async def _send_safe(update, text: str) -> None:
             )
         except Exception as e:
             logger.error(f"Error enviando mensaje (fallback plano): {e}")
+
+
+async def _enviar_imagenes(update, respuesta: str, imagenes_campo: list) -> None:
+    """Envía todas las imágenes encontradas en la respuesta y el campo imagenes."""
+    imagenes = _extraer_imagenes(respuesta, imagenes_campo)
+    if not imagenes:
+        return
+    for caption, ruta in imagenes[:5]:  # máximo 5
+        try:
+            with open(ruta, 'rb') as f:
+                await update.message.reply_photo(
+                    photo=f,
+                    caption=f"{EMOJIS['chart']} {caption}",
+                )
+        except Exception as e:
+            logger.error(f"Error enviando imagen {ruta.name}: {e}")
 
 class TelegramHandlers:
     """Manejadores de eventos del bot"""
@@ -228,18 +296,8 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             for msg in MessageFormatter.dividir_mensaje_largo(md_a_telegram(respuesta)):
                 await _send_safe(update, msg)
 
-            if imagenes:
-                for imagen in imagenes[:5]:
-                    try:
-                        ruta_imagen = Path(imagen)
-                        if ruta_imagen.exists():
-                            with open(ruta_imagen, 'rb') as f:
-                                await update.message.reply_photo(
-                                    photo=f,
-                                    caption=f"{EMOJIS['chart']} Gráfico generado",
-                                )
-                    except Exception as e:
-                        logger.error(f"Error enviando imagen: {e}")
+            # Enviar imágenes
+            await _enviar_imagenes(update, respuesta, imagenes)
 
             if ruta_excel or ruta_docx:
                 botones = []
@@ -332,21 +390,10 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             # Dividir mensaje si es muy largo
             for msg in MessageFormatter.dividir_mensaje_largo(md_a_telegram(respuesta)):
                 await _send_safe(update, msg)
-            
-            # Enviar imágenes si las hay
-            if imagenes:
-                for imagen in imagenes[:5]:  # Máximo 5 imágenes
-                    try:
-                        ruta_imagen = Path(imagen)
-                        if ruta_imagen.exists():
-                            with open(ruta_imagen, 'rb') as f:
-                                await update.message.reply_photo(
-                                    photo=f,
-                                    caption=f"{EMOJIS['chart']} Gráfico generado"
-                                )
-                    except Exception as e:
-                        logger.error(f"Error enviando imagen: {e}")
-            
+
+            # Enviar imágenes
+            await _enviar_imagenes(update, respuesta, imagenes)
+
             # Enviar botones de descarga si hay archivos
             if ruta_excel or ruta_docx:
                 botones = []
