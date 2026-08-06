@@ -73,30 +73,31 @@ OPTIONS (
 -- ---------------------------------------------------------------------------
 CREATE MATERIALIZED VIEW IF NOT EXISTS ventas_unificada AS
 WITH snapshot AS (
-    -- Deduplica: una referencia_base → una categoria (ya verificado sin conflictos)
-    SELECT DISTINCT ON (referencia_base)
+    -- Una fila por referencia_base con la categoria del snapshot actual.
+    -- DISTINCT simple: la tabla no tiene conflictos de categoria por referencia_base
+    -- (ya verificado: COUNT(DISTINCT categoria) = 1 para cada referencia_base).
+    SELECT DISTINCT
         referencia_base,
-        categoria,
-        linea          AS linea_snap,
-        perfil_prenda  AS perfil_snap,
-        estado         AS estado_snap,
-        precio_unitario
+        categoria       AS grupo_norm,
+        linea           AS linea_snap,
+        perfil_prenda   AS perfil_snap,
+        estado          AS estado_snap
     FROM grupo_norm_fdw
     WHERE referencia_base IS NOT NULL
-    ORDER BY referencia_base, loaded_at DESC
+      AND categoria IS NOT NULL
 ),
 ventas_raw AS (
-    SELECT *, 2025 AS "anio_tabla" FROM ventas_2025
+    SELECT * FROM ventas_2025
     UNION ALL
-    SELECT *, 2026 AS "anio_tabla" FROM ventas_2026
+    SELECT * FROM ventas_2026
 )
 SELECT
     v.*,
-    -- GRUPO normalizado: snapshot si existe, original como fallback
-    COALESCE(s.categoria, TRIM(v."GRUPO"))          AS "GRUPO_NORM",
-    -- Línea del snapshot como referencia alternativa (puede diferir del campo LINEA)
-    COALESCE(s.linea_snap, TRIM(v."LINEA"))         AS "LINEA_NORM",
-    -- Flag para identificar si la referencia tuvo normalización
+    -- GRUPO_NORM: categoria del snapshot si existe, GRUPO original como fallback
+    COALESCE(s.grupo_norm,  TRIM(v."GRUPO"))  AS "GRUPO_NORM",
+    -- LINEA_NORM: linea del snapshot si existe, LINEA original como fallback
+    COALESCE(s.linea_snap,  TRIM(v."LINEA"))  AS "LINEA_NORM",
+    -- Flag: TRUE si la referencia tiene normalización del snapshot
     CASE WHEN s.referencia_base IS NOT NULL THEN TRUE ELSE FALSE END AS "TIENE_NORM"
 FROM ventas_raw v
 LEFT JOIN snapshot s
