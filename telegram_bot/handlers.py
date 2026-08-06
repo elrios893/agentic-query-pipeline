@@ -14,7 +14,7 @@ from telegram.ext import Application, ContextTypes, CommandHandler, MessageHandl
 from telegram_bot.config import TELEGRAM_BOT_TOKEN, SERVER_URL, EMOJIS, TEMP_DIR
 from telegram_bot.session_manager import session_manager
 from telegram_bot.api_client import APIClient
-from telegram_bot.formatters import MessageFormatter
+from telegram_bot.formatters import MessageFormatter, md_a_telegram
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,11 @@ api_client = APIClient(SERVER_URL)
 
 
 async def _send_safe(update, text: str) -> None:
-    """Envía un mensaje intentando primero MARKDOWN y haciendo fallback a texto plano."""
+    """
+    Envía un mensaje con ParseMode.MARKDOWN.
+    Espera recibir texto ya convertido con md_a_telegram().
+    Si Telegram rechaza el parseo, reenvía como texto plano.
+    """
     try:
         await update.message.reply_text(
             text,
@@ -31,14 +35,14 @@ async def _send_safe(update, text: str) -> None:
             disable_web_page_preview=True,
         )
     except Exception:
-        # Si el markdown está mal formado, enviar como texto plano sin formato
+        # Fallback: texto plano sin ningún formato
         try:
             await update.message.reply_text(
                 text,
                 disable_web_page_preview=True,
             )
         except Exception as e:
-            logger.error(f"Error enviando mensaje (fallback): {e}")
+            logger.error(f"Error enviando mensaje (fallback plano): {e}")
 
 class TelegramHandlers:
     """Manejadores de eventos del bot"""
@@ -221,7 +225,7 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             ruta_excel = resultado.get('ruta_excel', '')
             ruta_docx  = resultado.get('ruta_docx', '')
 
-            for msg in MessageFormatter.dividir_mensaje_largo(respuesta):
+            for msg in MessageFormatter.dividir_mensaje_largo(md_a_telegram(respuesta)):
                 await _send_safe(update, msg)
 
             if imagenes:
@@ -326,9 +330,7 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             ruta_docx = resultado.get('ruta_docx', '')
             
             # Dividir mensaje si es muy largo
-            mensajes = MessageFormatter.dividir_mensaje_largo(respuesta)
-            
-            for msg in mensajes:
+            for msg in MessageFormatter.dividir_mensaje_largo(md_a_telegram(respuesta)):
                 await _send_safe(update, msg)
             
             # Enviar imágenes si las hay

@@ -1,215 +1,249 @@
 """
 telegram_bot/formatters.py
-Formateadores para convertir respuestas a formato legible en Telegram
+Formateadores para convertir respuestas a formato legible en Telegram.
+
+Conversión Markdown estándar → formato Telegram (MarkdownV1 compatible):
+  ## Título        →  *TÍTULO*
+  **negrita**      →  *negrita*
+  *cursiva*        →  _cursiva_
+  | tabla |        →  bloque de código monoespaciado (```...```)
+  ![img](ruta)     →  (eliminado — la imagen se envía por separado)
+  `código`         →  `código`  (igual, Telegram lo soporta)
 """
 import re
 from typing import List, Dict, Any, Optional
 from telegram_bot.config import EMOJIS, MAX_MESSAGE_LENGTH
 
+
+# ---------------------------------------------------------------------------
+# Conversor principal: Markdown estándar → texto para Telegram
+# ---------------------------------------------------------------------------
+
+def _convertir_tabla_pipe(bloque_tabla: str) -> str:
+    """
+    Convierte una tabla Markdown de pipes a una tabla ASCII monoespaciada
+    envuelta en bloque de código (``` ```) para Telegram.
+
+    Entrada:
+        | Col A | Col B |
+        |-------|-------|
+        | val1  | val2  |
+
+    Salida (dentro de triple backtick):
+        Col A  │ Col B
+        ───────┼───────
+        val1   │ val2
+    """
+    lineas = [l.rstrip() for l in bloque_tabla.strip().splitlines() if l.strip()]
+    if not lineas:
+        return ''
+
+    # Parsear filas: quitar | iniciales/finales y separar celdas
+    filas = []
+    separador_idx = None
+    for i, linea in enumerate(lineas):
+        if re.match(r'^\s*\|?\s*[-:]+[-| :]*$', linea):
+            separador_idx = i
+            continue
+        celdas = [c.strip() for c in re.split(r'\|', linea.strip('| \t'))]
+        filas.append(celdas)
+
+    if not filas:
+        return ''
+
+    # Normalizar número de columnas
+    n_cols = max(len(f) for f in filas)
+    filas = [f + [''] * (n_cols - len(f)) for f in filas]
+
+    # Calcular anchos de columna
+    anchos = [max(len(filas[r][c]) for r in range(len(filas))) for c in range(n_cols)]
+
+    def fila_a_texto(celdas):
+        return ' │ '.join(str(celdas[c]).ljust(anchos[c]) for c in range(n_cols))
+
+    lineas_resultado = []
+    encabezado_emitido = False
+    for i, fila in enumerate(filas):
+        lineas_resultado.append(fila_a_texto(fila))
+        # Después de la primera fila (encabezado), poner separador
+        if not encabezado_emitido and len(filas) > 1:
+            sep = '─' * (sum(anchos) + 3 * (n_cols - 1))
+            lineas_resultado.append(sep)
+            encabezado_emitido = True
+
+    tabla_ascii = '\n'.join(lineas_resultado)
+    return f'```\n{tabla_ascii}\n```'
+
+
+def md_a_telegram(texto: str) -> str:
+    """
+    Convierte Markdown estándar al subconjunto de formato que Telegram
+    renderiza correctamente con ParseMode.MARKDOWN (v1).
+
+    Reglas aplicadas (en orden):
+    1. Bloques de código cercados (``` ... ```) → se conservan tal cual
+    2. Tablas pipe (| col | col |) → tabla ASCII en bloque ```
+    3. ![imagen](ruta) → eliminado (las imágenes se envían por separado)
+    4. ## / ### Encabezados → *TEXTO EN MAYÚSCULAS*
+    5. **negrita** → *negrita*
+    6. __negrita__ → *negrita*
+    7. *cursiva* (sin par de asteriscos) → _cursiva_
+    8. _cursiva_ → se conserva (ya es formato Telegram)
+    9. `código inline` → se conserva
+    10. Líneas separadoras --- o === → ───────────────────
+    """
+    if not texto:
+        return texto
+
+    # --- 1. Proteger bloques de código existentes (no tocarlos) ---
+    bloques_codigo = {}
+    contador = [0]
+
+    def guardar_bloque(m):
+        token = f'\x00BLOQUE{contador[0]}\x00'
+        bloques_codigo[token] = m.group(0)
+        contador[0] += 1
+        return token
+
+    texto = re.sub(r'```[\s\S]*?```', guardar_bloque, texto)
+
+    # --- 2. Convertir tablas pipe ---
+    def reemplazar_tabla(m):
+        return _convertir_tabla_pipe(m.group(0))
+
+    # Detecta bloque de líneas que contengan pipes (tabla markdown)
+    # Acepta líneas con o sin newline al final (última línea del texto)
+    texto = re.sub(
+        r'(?m)^(?:\|[^\n]+\|?\s*\n)*\|[^\n]+\|?\s*$',
+        reemplazar_tabla,
+        texto,
+    )
+
+    # --- 3. Eliminar imágenes markdown (![alt](url)) ---
+    texto = re.sub(r'!\[[^\]]*\]\([^)]*\)', '', texto)
+
+    # --- 4. Encabezados ## y ### → *TÍTULO* ---
+    def reemplazar_encabezado(m):
+        nivel = len(m.group(1))   # número de #
+        titulo = m.group(2).strip()
+        # Limpiar negritas dentro del título antes de convertir
+        titulo = re.sub(r'\*\*(.+?)\*\*', r'\1', titulo)
+        titulo = re.sub(r'__(.+?)__', r'\1', titulo)
+        if nivel <= 3:
+            return f'\n*{titulo.upper()}*'
+        else:
+            return f'\n*{titulo}*'
+
+    texto = re.sub(r'^(#{1,6})\s+(.+)$', reemplazar_encabezado, texto, flags=re.MULTILINE)
+
+    # --- 5. **negrita** y __negrita__ → marcador temporal para proteger de regex de cursiva ---
+    MARCA = '\x01'
+    texto = re.sub(r'\*\*(.+?)\*\*', lambda m: f'{MARCA}{m.group(1)}{MARCA}', texto, flags=re.DOTALL)
+    texto = re.sub(r'__(.+?)__',     lambda m: f'{MARCA}{m.group(1)}{MARCA}', texto, flags=re.DOTALL)
+
+    # --- 6. *cursiva* suelta → _cursiva_ (solo cuando no es negrita ni lista) ---
+    texto = re.sub(r'(?<![*\n])\*(?!\*)([^*\n]+?)\*(?!\*)', r'_\1_', texto)
+
+    # --- 7. Restaurar marcadores de negrita → *texto* ---
+    texto = texto.replace(MARCA, '*')
+
+    # --- 7. Líneas separadoras (--- o ===) → línea de guiones Unicode ---
+    texto = re.sub(r'^[-=]{3,}\s*$', '─' * 30, texto, flags=re.MULTILINE)
+
+    # --- 8. Restaurar bloques de código protegidos ---
+    for token, bloque in bloques_codigo.items():
+        texto = texto.replace(token, bloque)
+
+    # --- 9. Limpiar líneas en blanco excesivas (máx 2 consecutivas) ---
+    texto = re.sub(r'\n{3,}', '\n\n', texto)
+
+    return texto.strip()
+
+
+# ---------------------------------------------------------------------------
+# Clase principal de formateo
+# ---------------------------------------------------------------------------
+
 class MessageFormatter:
     """Formatea mensajes para Telegram"""
-    
+
     @staticmethod
-    def formato_titulo(titulo: str, emoji: str = '📊') -> str:
-        """Formatea un título con emoji"""
-        return f"{emoji} *{titulo}*"
-    
-    @staticmethod
-    def formato_seccion(titulo: str, contenido: str) -> str:
-        """Formatea una sección con título y contenido"""
-        linea_separadora = "─" * 30
-        return f"\n{linea_separadora}\n*{titulo}*\n{linea_separadora}\n{contenido}"
-    
-    @staticmethod
-    def formato_tabla_simple(datos: List[Dict[str, Any]], max_ancho: int = 80) -> str:
-        """Convierte un DataFrame/lista de datos a tabla de texto plano para Telegram"""
-        if not datos:
-            return "Sin datos"
-        
-        # Si es un DataFrame, convertir a lista de dicts
-        if hasattr(datos, 'to_dict'):
-            datos = datos.to_dict('records')
-        
-        # Obtener columnas
-        columnas = list(datos[0].keys()) if datos else []
-        
-        # Calcular ancho de columnas
-        anchos = {}
-        for col in columnas:
-            # Ancho máximo: nombre de columna o contenido más largo
-            ancho_col = len(str(col))
-            for fila in datos:
-                ancho_col = max(ancho_col, len(str(fila.get(col, ''))))
-            anchos[col] = min(ancho_col, 20)  # Máximo 20 caracteres por columna
-        
-        # Construir tabla
-        linea_separadora = "─" * (sum(anchos.values()) + len(columnas) * 3 + 1)
-        
-        # Encabezado
-        encabezado = "│ " + " │ ".join(
-            f"{col:<{anchos[col]}}" for col in columnas
-        ) + " │"
-        
-        tabla = f"{linea_separadora}\n{encabezado}\n{linea_separadora}\n"
-        
-        # Filas
-        for fila in datos[:20]:  # Máximo 20 filas para no saturar
-            fila_texto = "│ " + " │ ".join(
-                f"{str(fila.get(col, '')):<{anchos[col]}}" for col in columnas
-            ) + " │"
-            tabla += fila_texto + "\n"
-        
-        if len(datos) > 20:
-            tabla += f"\n... y {len(datos) - 20} registros más\n"
-        
-        tabla += linea_separadora
-        
-        return tabla
-    
-    @staticmethod
-    def formato_tabla_markdown(datos: List[Dict[str, Any]]) -> str:
-        """Convierte datos a tabla en markdown para Telegram"""
-        if not datos:
-            return "Sin datos"
-        
-        # Si es un DataFrame, convertir a lista de dicts
-        if hasattr(datos, 'to_dict'):
-            datos = datos.to_dict('records')
-        
-        columnas = list(datos[0].keys()) if datos else []
-        
-        # Encabezado markdown
-        tabla = "| " + " | ".join(columnas) + " |\n"
-        tabla += "| " + " | ".join("---" for _ in columnas) + " |\n"
-        
-        # Filas (máximo 15 para no saturar)
-        for fila in datos[:15]:
-            valores = [str(fila.get(col, '')).replace('|', '\\|') for col in columnas]
-            tabla += "| " + " | ".join(valores) + " |\n"
-        
-        if len(datos) > 15:
-            tabla += f"\n_(Mostrando 15 de {len(datos)} registros)_"
-        
-        return tabla
-    
-    @staticmethod
-    def formato_resultado_sql(resultado: Dict[str, Any]) -> str:
-        """Formatea un resultado de SQL para Telegram"""
-        if not resultado.get('success'):
-            return f"{EMOJIS['error']} *Error en la consulta:*\n`{resultado.get('error', 'Error desconocido')}`"
-        
-        respuesta = f"{EMOJIS['success']} *Consulta ejecutada exitosamente*\n"
-        
-        # Información básica
-        total = resultado.get('total_filas', 0)
-        respuesta += f"_Total de registros: {total}_\n"
-        
-        # Datos en tabla
-        if resultado.get('rows'):
-            respuesta += "\n"
-            # Usar formato simple de tabla
-            datos = []
-            columnas = resultado.get('columns', [])
-            for fila in resultado.get('rows', [])[:20]:
-                datos.append(dict(zip(columnas, fila)))
-            
-            respuesta += MessageFormatter.formato_tabla_simple(datos)
-        
-        return respuesta
-    
-    @staticmethod
-    def formato_respuesta_general(
-        respuesta: str,
-        tipo: str = 'consulta',
-        imagenes: Optional[List[str]] = None,
-        duracion: float = 0.0
-    ) -> Dict[str, Any]:
-        """Formatea una respuesta general del pipeline"""
-        
-        respuesta_formateada = respuesta.strip()
-        
-        # Agregar información de tipo
-        if tipo == 'informe':
-            prefijo = f"{EMOJIS['report']} *Informe generado*"
-        elif tipo == 'consulta':
-            prefijo = f"{EMOJIS['chart']} *Resultado de la consulta*"
-        elif tipo == 'error':
-            prefijo = f"{EMOJIS['error']} *Error al procesar la consulta*"
-        else:
-            prefijo = f"{EMOJIS['info']} *Respuesta*"
-        
-        # Agregar duracion si es significativa
-        if duracion > 0.5:
-            sufijo = f"\n\n_⏱️ Procesado en {duracion:.1f} segundos_"
-        else:
-            sufijo = ""
-        
-        # Combinar
-        mensaje_completo = f"{prefijo}\n\n{respuesta_formateada}{sufijo}"
-        
-        return {
-            'mensaje': mensaje_completo,
-            'tipo': tipo,
-            'imagenes': imagenes or [],
-            'largo': len(mensaje_completo)
-        }
-    
+    def convertir_para_telegram(texto: str) -> str:
+        """Convierte Markdown estándar al formato legible en Telegram."""
+        return md_a_telegram(texto)
+
     @staticmethod
     def dividir_mensaje_largo(mensaje: str, max_length: int = MAX_MESSAGE_LENGTH) -> List[str]:
-        """Divide un mensaje largo en varias partes"""
+        """
+        Divide un mensaje largo en partes respetando el límite de Telegram.
+        Evita cortar dentro de bloques de código (```) para no romper el formato.
+        """
         if len(mensaje) <= max_length:
             return [mensaje]
-        
+
         mensajes = []
-        partes = mensaje.split('\n')
         mensaje_actual = ''
-        
-        for parte in partes:
-            if len(mensaje_actual) + len(parte) + 1 <= max_length:
-                mensaje_actual += parte + '\n'
-            else:
-                if mensaje_actual:
+        en_bloque_codigo = False
+
+        for linea in mensaje.splitlines(keepends=True):
+            # Rastrear si estamos dentro de un bloque ```
+            if linea.strip().startswith('```'):
+                en_bloque_codigo = not en_bloque_codigo
+
+            # Si añadir esta línea supera el límite y no estamos en bloque de código
+            if len(mensaje_actual) + len(linea) > max_length and not en_bloque_codigo:
+                if mensaje_actual.strip():
                     mensajes.append(mensaje_actual.strip())
-                mensaje_actual = parte + '\n'
-        
-        if mensaje_actual:
+                mensaje_actual = linea
+            else:
+                mensaje_actual += linea
+
+        if mensaje_actual.strip():
             mensajes.append(mensaje_actual.strip())
-        
-        return mensajes
-    
+
+        return mensajes if mensajes else [mensaje]
+
+    # ------------------------------------------------------------------
+    # Métodos de apoyo (para uso interno o futuro)
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def formato_menu(opciones: List[str], titulo: str = "Selecciona una opción") -> str:
-        """Formatea un menú de opciones"""
-        menu = f"*{titulo}*\n\n"
-        for i, opcion in enumerate(opciones, 1):
-            menu += f"`{i}` {opcion}\n"
-        return menu
-    
+    def formato_titulo(titulo: str, emoji: str = '📊') -> str:
+        return f"{emoji} *{titulo}*"
+
     @staticmethod
-    def formato_estado_procesamiento(etapa: str, progreso: int = 0) -> str:
-        """Formatea el estado de un procesamiento"""
-        barra_progreso = "▓" * progreso + "░" * (10 - progreso)
-        return f"{EMOJIS['loading']} *Procesando...*\n[{barra_progreso}] {etapa}"
-    
+    def formato_tabla_simple(datos: List[Dict[str, Any]]) -> str:
+        """Convierte lista de dicts a tabla ASCII monoespaciada (en bloque ```)."""
+        if not datos:
+            return 'Sin datos'
+        if hasattr(datos, 'to_dict'):
+            datos = datos.to_dict('records')
+
+        columnas = list(datos[0].keys())
+        anchos = {
+            col: max(len(str(col)), max(len(str(f.get(col, ''))) for f in datos))
+            for col in columnas
+        }
+        # Limitar ancho por columna
+        anchos = {col: min(v, 25) for col, v in anchos.items()}
+
+        def fila(cells):
+            return ' │ '.join(str(cells.get(c, '')).ljust(anchos[c])[:anchos[c]] for c in columnas)
+
+        sep = '─' * (sum(anchos.values()) + 3 * (len(columnas) - 1))
+        lineas = [fila({c: c for c in columnas}), sep]
+        for row in datos[:20]:
+            lineas.append(fila(row))
+        if len(datos) > 20:
+            lineas.append(f'... y {len(datos) - 20} registros más')
+
+        return '```\n' + '\n'.join(lineas) + '\n```'
+
     @staticmethod
-    def limpiar_html(texto: str) -> str:
-        """Limpia etiquetas HTML del texto"""
-        # Remover etiquetas HTML comunes
-        texto = re.sub(r'<[^>]+>', '', texto)
-        # Remover entidades HTML
-        texto = re.sub(r'&\w+;', '', texto)
-        return texto
-    
-    @staticmethod
-    def formato_archivo(nombre_archivo: str, tamaño: int = 0, tipo: str = 'documento') -> str:
-        """Formatea información de un archivo"""
-        emoji_tipo = {
-            'documento': EMOJIS['file'],
-            'imagen': '🖼️',
-            'excel': '📊',
-            'pdf': '📄',
-            'grafico': EMOJIS['chart']
-        }.get(tipo, EMOJIS['file'])
-        
-        tamaño_str = f"{tamaño / (1024*1024):.1f} MB" if tamaño > 1024*1024 else f"{tamaño / 1024:.1f} KB"
-        return f"{emoji_tipo} {nombre_archivo}\n_Tamaño: {tamaño_str}_"
+    def formato_archivo(nombre: str, tamanio: int = 0, tipo: str = 'documento') -> str:
+        emoji = {'excel': '📊', 'imagen': '🖼️', 'pdf': '📄'}.get(tipo, EMOJIS['file'])
+        if tamanio > 1024 * 1024:
+            tam_str = f"{tamanio / (1024*1024):.1f} MB"
+        else:
+            tam_str = f"{tamanio / 1024:.1f} KB"
+        return f"{emoji} {nombre}\n_Tamaño: {tam_str}_"
