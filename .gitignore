@@ -23,6 +23,11 @@ excel_sheets/
 md_texts/
 prompts/
 
+# --- Telegram Bot ---
+telegram_bot/temp_files/
+telegram_bot/bot.log
+telegram_bot/__pycache__/
+
 # --- Notebooks ---
 *.ipynb
 

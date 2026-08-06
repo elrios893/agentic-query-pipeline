@@ -13,3 +13,6 @@ filelock>=3.32
 fastapi>=0.111
 uvicorn>=0.29
 requests>=2.31
+python-telegram-bot>=20.0
+requests>=2.28.0
+

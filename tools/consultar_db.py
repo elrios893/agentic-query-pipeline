@@ -32,7 +32,16 @@ PROHIBITED_KEYWORDS = [
 ]
 
 def is_read_only(query: str) -> bool:
-    cleaned = re.sub(r'["\'`][^"\'`]*["\'`]', '', query, flags=re.IGNORECASE)
+    # Eliminar comentarios SQL de línea (-- ...) y de bloque (/* ... */)
+    cleaned = re.sub(r'--[^\n]*', '', query)
+    cleaned = re.sub(r'/\*.*?\*/', '', cleaned, flags=re.DOTALL)
+    # Eliminar strings entre comillas simples (literales de texto)
+    cleaned = re.sub(r"'[^']*'", '', cleaned)
+    # Eliminar identificadores entre comillas dobles (nombres de columna/tabla)
+    cleaned = re.sub(r'"[^"]*"', '', cleaned)
+    # Eliminar backticks
+    cleaned = re.sub(r'`[^`]*`', '', cleaned)
+
     first_words = re.findall(r'\b\w+\b', cleaned)
     if not first_words:
         return False

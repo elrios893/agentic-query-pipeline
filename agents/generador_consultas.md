@@ -101,7 +101,19 @@ ORDER BY 2, 1;
     ```
     Esto excluye valores corruptos como fechas mal parseadas (`"38/2026"`, `"6/09/2026"`) o tallas de otra categoría que no correspondan al formato esperado. Si el filtro elimina más del 30% de los registros, advertir al usuario que el campo TALLA tiene datos inconsistentes en el periodo.
 13. **Nunca filtres por `SIGNO`**. No uses `TRIM("SIGNO") = '-'` ni ninguna condición sobre la columna `SIGNO`. El campo `DESC_MOVIMIENTO = 'VENTAS POS'` ya delimita correctamente las ventas. Agregar el filtro de `SIGNO` es redundante y causa rechazo en la validación.
-14. **CAST para ROUND en porcentajes y decimales**: PostgreSQL requiere que el argumento de `ROUND()` sea tipo `numeric`. Cuando calcules porcentajes o valores con decimales, **siempre usa `CAST(...AS numeric)` antes de `ROUND()`**:
+
+14. **Búsquedas de texto — SIEMPRE usa `ILIKE`, NUNCA `LIKE`**: Cuando filtres por texto (columnas como `GRUPO_NORM`, `DESC_ITEM`, `LINEA`, `DEPARTAMENTO`, `CIUDAD`, `DESC_DEPENDENCIA`, etc.), **SIEMPRE** usa `ILIKE` en lugar de `LIKE`. `ILIKE` es case-insensitive en PostgreSQL, lo que hace las búsquedas robustas ante variaciones de mayúsculas/minúsculas en los datos. Ejemplos correctos:
+    ```sql
+    -- CORRECTO: usar ILIKE para búsquedas insensibles a mayúsculas
+    WHERE TRIM("GRUPO_NORM") ILIKE '%Chaqueta%'
+    WHERE TRIM("GRUPO_NORM") ILIKE '%Manga Larga%'
+    WHERE TRIM("DESC_ITEM") ILIKE '%Camisa%'
+    
+    -- INCORRECTO: NO uses LIKE (es case-sensitive)
+    WHERE TRIM("GRUPO_NORM") LIKE '%Chaqueta%'  -- ✗ Falla con "CHAQUETA" o "chaqueta"
+    ```
+
+15. **CAST para ROUND en porcentajes y decimales**: PostgreSQL requiere que el argumento de `ROUND()` sea tipo `numeric`. Cuando calcules porcentajes o valores con decimales, **siempre usa `CAST(...AS numeric)` antes de `ROUND()`**:
     ```sql
     -- CORRECTO
     SELECT ROUND(CAST((SUM("CANTIDAD" * "PVP") * 100.0) / NULLIF(SUM("CANTIDAD" * "PVP"), 0) AS numeric), 2) AS "Porcentaje"
@@ -109,7 +121,7 @@ ORDER BY 2, 1;
     -- INCORRECTO (causa error: function round(double precision, integer) does not exist)
     SELECT ROUND((SUM("CANTIDAD" * "PVP") * 100.0) / NULLIF(SUM("CANTIDAD" * "PVP"), 0), 2) AS "Porcentaje"
     ```
-15. **Comparaciones de múltiples períodos temporales — NUNCA uses JOINs**: Cuando el usuario pida comparar ventas de dos meses, semanas, o períodos distintos, **NUNCA** generes `FULL OUTER JOIN`, `LEFT JOIN`, o `RIGHT JOIN` entre subqueries filtradas por fecha. Esto causa **Cartesian product** (multiplicación artificial de cifras).
+16. **Comparaciones de múltiples períodos temporales — NUNCA uses JOINs**: Cuando el usuario pida comparar ventas de dos meses, semanas, o períodos distintos, **NUNCA** generes `FULL OUTER JOIN`, `LEFT JOIN`, o `RIGHT JOIN` entre subqueries filtradas por fecha. Esto causa **Cartesian product** (multiplicación artificial de cifras).
     
     **Patrón INCORRECTO:**
     ```sql
@@ -158,14 +170,14 @@ ORDER BY 2, 1;
     ORDER BY "Dia";
     ```
 
-16. **Generación de tablas markdown**: Cuando el usuario pida explícitamente "tabla", "compara", o "ranking", genera una consulta SQL que devuelva datos listos para formatear como tabla markdown. Asegúrate de:
+17. **Generación de tablas markdown**: Cuando el usuario pida explícitamente "tabla", "compara", o "ranking", genera una consulta SQL que devuelva datos listos para formatear como tabla markdown. Asegúrate de:
     - Usar `ROUND(..., 2)` para decimales en moneda (ej: `$126.50`)
     - Alinear números a la derecha en markdown: `| ---: |`
     - Incluir separador de miles: `SUM(...) AS valor` → renderizar como `$126,300,000`
     - Si hay más de 20 resultados, el sistema agregará nota automática: "(Mostrando top 20 de X resultados)"
     - Para rankings: incluir columna de posición numérica (1, 2, 3...) y % del total
 
-17. **Subqueries para buscar "día/fecha de mayor venta" + LIMIT obligatorio**: Cuando busques la fecha/día con más ventas de un item/referencia/categoría, SIEMPRE:
+18. **Subqueries para buscar "día/fecha de mayor venta" + LIMIT obligatorio**: Cuando busques la fecha/día con más ventas de un item/referencia/categoría, SIEMPRE:
      - Usa subquery con `GROUP BY fecha` + `ORDER BY SUM(cantidad) DESC` + `LIMIT 1`
      - Envuelve el subquery con `COALESCE(..., 'Sin registros')` para evitar NULLs
      - En la query principal, filtra con `HAVING SUM(valor) IS NOT NULL` para eliminar referencias sin ventas
@@ -200,7 +212,7 @@ ORDER BY 2, 1;
      LIMIT 10;  -- ← Default si el usuario no especifica
      ```
 
-18. **REFERENCIA siempre acompañada de GRUPO_NORM**: Cuando generes una consulta SQL que incluya la columna `"REFERENCIA"` en el SELECT, DEBES incluir también `TRIM("GRUPO_NORM") AS "GRUPO"` (si usas `ventas_unificada`) o `UPPER(TRIM("GRUPO")) AS "GRUPO"` (si usas las tablas origen). Esto es obligatorio para que el usuario pueda contextualizar cada referencia con su grupo de producto. Ejemplo con `ventas_unificada`:
+19. **REFERENCIA siempre acompañada de GRUPO_NORM**: Cuando generes una consulta SQL que incluya la columna `"REFERENCIA"` en el SELECT, DEBES incluir también `TRIM("GRUPO_NORM") AS "GRUPO"` (si usas `ventas_unificada`) o `UPPER(TRIM("GRUPO")) AS "GRUPO"` (si usas las tablas origen). Esto es obligatorio para que el usuario pueda contextualizar cada referencia con su grupo de producto. Ejemplo con `ventas_unificada`:
      ```sql
      SELECT
        UPPER(TRIM("REFERENCIA")) AS "REFERENCIA",
@@ -212,9 +224,9 @@ ORDER BY 2, 1;
      GROUP BY "REFERENCIA", "GRUPO_NORM"
      ```
 
-19. **GRUPO_NORM — columna normalizada en ventas_unificada**: La columna `"GRUPO_NORM"` de `ventas_unificada` es la versión estandarizada de `"GRUPO"`. Sus valores coinciden con los de `ventas_2026`. Usar SIEMPRE `"GRUPO_NORM"` en lugar de `"GRUPO"` cuando la tabla sea `ventas_unificada`. Si la tabla es `ventas_2025` o `ventas_2026` directamente, usar `"GRUPO"` normalmente.
+20. **GRUPO_NORM — columna normalizada en ventas_unificada**: La columna `"GRUPO_NORM"` de `ventas_unificada` es la versión estandarizada de `"GRUPO"`. Sus valores coinciden con los de `ventas_2026`. Usar SIEMPRE `"GRUPO_NORM"` en lugar de `"GRUPO"` cuando la tabla sea `ventas_unificada`. Si la tabla es `ventas_2025` o `ventas_2026` directamente, usar `"GRUPO"` normalmente.
 
-19. **Window functions con porcentajes (OVER sin PARTITION)**: Cuando uses `SUM(...) OVER ()` en una query con `GROUP BY`, PostgreSQL requiere anidar la función de agregado:
+21. **Window functions con porcentajes (OVER sin PARTITION)**: Cuando uses `SUM(...) OVER ()` en una query con `GROUP BY`, PostgreSQL requiere anidar la función de agregado:
      - **INCORRECTO:** `(SUM("CANTIDAD") * 100.0) / NULLIF(SUM("CANTIDAD") OVER (), 0)` → Error: column must appear in GROUP BY
      - **CORRECTO:** `(SUM("CANTIDAD") * 100.0) / NULLIF(SUM(SUM("CANTIDAD")) OVER (), 0)` → Anida el agregado
      
