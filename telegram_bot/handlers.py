@@ -170,6 +170,7 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
 /ayuda - Mostrar esta ayuda
 /sesion - Ver info de tu sesión
 /limpiar - Limpiar archivos temporales
+/reset - Reiniciar conversación a estado inicial
 
 *Ejemplos de consultas:*
 
