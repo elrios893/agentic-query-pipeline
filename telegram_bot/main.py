@@ -55,6 +55,7 @@ def main():
     app.add_handler(CommandHandler("session", TelegramHandlers.sesion))
     app.add_handler(CommandHandler("limpiar", TelegramHandlers.limpiar))
     app.add_handler(CommandHandler("clear",   TelegramHandlers.limpiar))
+    app.add_handler(CommandHandler("analisis", TelegramHandlers.analisis))
 
     # Handler para mensajes de texto
     app.add_handler(
@@ -65,6 +66,19 @@ def main():
     app.add_handler(
         CallbackQueryHandler(TelegramHandlers.descargar_archivo, pattern="^download_")
     )
+
+    # Registrar comandos visibles en el menú de Telegram
+    async def post_init(application: Application) -> None:
+        await application.bot.set_my_commands([
+            ("start",    "Iniciar el bot"),
+            ("ayuda",    "Mostrar ayuda"),
+            ("analisis", "Activar agente analista"),
+            ("sesion",   "Ver informacion de sesion"),
+            ("limpiar",  "Limpiar archivos temporales"),
+        ])
+        logger.info(f"{EMOJIS['success']} Comandos del menu registrados en Telegram")
+
+    app.post_init = post_init
 
     logger.info(f"{EMOJIS['success']} Bot listo — presiona Ctrl+C para detener")
 

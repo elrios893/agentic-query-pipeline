@@ -171,6 +171,102 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             f"{EMOJIS['success']} Archivos temporales limpiados.",
             parse_mode=ParseMode.MARKDOWN
         )
+
+    @staticmethod
+    async def analisis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /analisis — activa el agente analista sobre los datos.
+        Uso:
+          /analisis                → análisis general de ventas
+          /analisis por qué cayeron las ventas de caballero
+        El orquestador detecta el prefijo '/analisis' y fuerza el agente analista.
+        """
+        user = update.effective_user
+        chat_id = update.effective_chat.id
+
+        # El texto adicional que el usuario escribió después de /analisis
+        prompt_extra = " ".join(context.args).strip() if context.args else ""
+        pregunta = f"/analisis {prompt_extra}" if prompt_extra else "/analisis"
+
+        # Obtener o crear sesión
+        session_manager.obtener_o_crear(
+            user_id=user.id,
+            chat_id=chat_id,
+            username=user.username,
+            first_name=user.first_name,
+        )
+        session_id = f"telegram_{user.id}"
+
+        mensaje_espera = await update.message.reply_text(
+            f"{EMOJIS['loading']} Activando agente analista...\n_(Esto puede tardar un momento)_",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        try:
+            inicio = time.time()
+            resultado = api_client.enviar_consulta(session_id, pregunta)
+            duracion = time.time() - inicio
+
+            try:
+                await mensaje_espera.delete()
+            except Exception:
+                pass
+
+            if not resultado.get('success', True):
+                error = resultado.get('error', 'Error desconocido')
+                await _send_safe(update, f"{EMOJIS['error']} *Error:*\n{error}")
+                return
+
+            respuesta = resultado.get('respuesta', '')
+            imagenes  = resultado.get('imagenes', [])
+            ruta_excel = resultado.get('ruta_excel', '')
+            ruta_docx  = resultado.get('ruta_docx', '')
+
+            for msg in MessageFormatter.dividir_mensaje_largo(respuesta):
+                await _send_safe(update, msg)
+
+            if imagenes:
+                for imagen in imagenes[:5]:
+                    try:
+                        ruta_imagen = Path(imagen)
+                        if ruta_imagen.exists():
+                            with open(ruta_imagen, 'rb') as f:
+                                await update.message.reply_photo(
+                                    photo=f,
+                                    caption=f"{EMOJIS['chart']} Gráfico generado",
+                                )
+                    except Exception as e:
+                        logger.error(f"Error enviando imagen: {e}")
+
+            if ruta_excel or ruta_docx:
+                botones = []
+                if ruta_excel:
+                    botones.append(InlineKeyboardButton(
+                        f"{EMOJIS['download']} Descargar Excel",
+                        callback_data=f"download_excel_{user.id}",
+                    ))
+                if ruta_docx:
+                    botones.append(InlineKeyboardButton(
+                        f"{EMOJIS['report']} Descargar Informe",
+                        callback_data=f"download_docx_{user.id}",
+                    ))
+                if botones:
+                    keyboard = InlineKeyboardMarkup([botones])
+                    await update.message.reply_text(
+                        f"{EMOJIS['file']} Archivos disponibles para descargar:",
+                        reply_markup=keyboard,
+                    )
+                    context.user_data['ultima_ruta_excel'] = ruta_excel
+                    context.user_data['ultima_ruta_docx']  = ruta_docx
+
+            session_manager.incrementar_turno(user.id)
+
+        except Exception as e:
+            logger.error(f"Error en /analisis: {e}")
+            try:
+                await mensaje_espera.delete()
+            except Exception:
+                pass
+            await _send_safe(update, f"{EMOJIS['error']} Error inesperado: {str(e)}")
     
     @staticmethod
     async def procesar_mensaje(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
