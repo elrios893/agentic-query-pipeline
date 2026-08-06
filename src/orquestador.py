@@ -1505,12 +1505,15 @@ def pre_computar_metricas(resultado: dict) -> dict:
     El analista recibe hechos ya calculados, no solo números crudos.
 
     Retorna dict con:
-      - total_general: suma de cada columna numérica
-      - variaciones_pct: cambio % entre filas consecutivas (para series temporales)
-      - top_3_concentracion: qué % del total acumulan las 3 primeras filas
-      - outliers: filas cuyo valor supera media + 2*std en alguna columna numérica
-      - min_max: valor mínimo y máximo por columna numérica
-      - gaps_temporales: índices donde el valor cae a 0 (posibles ausencias)
+      - totales: suma de cada columna numérica
+      - min_max: valor mínimo y máximo con etiqueta de categoría
+      - top3_concentracion_pct: % que acumulan las 3 primeras filas
+      - concentracion_por_categoria: % de cada categoría sobre el total (si hay col de texto)
+      - variaciones_pct: cambio % entre filas consecutivas
+      - tendencia_variaciones: 'creciente' | 'decreciente' | 'volatil' | 'estable'
+      - outliers: filas con valor > media ± 2*std
+      - gaps_valor_cero: categorías con valor 0
+      - ratios_cruzados: PVP promedio ponderado si hay columnas CANTIDAD y VALOR
     """
     import statistics
 
@@ -1520,7 +1523,7 @@ def pre_computar_metricas(resultado: dict) -> dict:
     if not cols or not rows:
         return {}
 
-    # Identificar columnas numéricas
+    # Identificar columnas numéricas y categóricas
     primera = dict(zip(cols, rows[0]))
     cols_num = [c for c, v in primera.items() if isinstance(v, (int, float))]
     col_cat  = next((c for c, v in primera.items() if isinstance(v, str)), None)
@@ -1530,20 +1533,24 @@ def pre_computar_metricas(resultado: dict) -> dict:
 
     metricas = {}
 
+    # — Construir vectores de valores por columna —
+    vectores = {}
     for col in cols_num:
-        valores = []
+        vals = []
         for row in rows:
             rd = dict(zip(cols, row))
             v  = rd.get(col)
-            valores.append(float(v) if isinstance(v, (int, float)) else 0.0)
+            vals.append(float(v) if isinstance(v, (int, float)) else 0.0)
+        vectores[col] = vals
 
+    for col, valores in vectores.items():
         total = sum(valores)
         n     = len(valores)
 
-        # Total general
+        # Totales
         metricas.setdefault('totales', {})[col] = round(total, 2)
 
-        # Min / Max con etiqueta de categoría si existe
+        # Min / Max con etiqueta
         idx_max = valores.index(max(valores))
         idx_min = valores.index(min(valores))
         label_max = str(dict(zip(cols, rows[idx_max])).get(col_cat, idx_max)) if col_cat else str(idx_max)
@@ -1558,21 +1565,56 @@ def pre_computar_metricas(resultado: dict) -> dict:
             top3_suma = sum(sorted(valores, reverse=True)[:3])
             metricas.setdefault('top3_concentracion_pct', {})[col] = round(top3_suma / total * 100, 1)
 
+        # Concentración por categoría (% de cada fila sobre el total)
+        if col_cat and total > 0:
+            dist = []
+            for i, v in enumerate(valores):
+                label = str(dict(zip(cols, rows[i])).get(col_cat, i))
+                dist.append({
+                    'categoria': label,
+                    'valor':     round(v, 2),
+                    'pct':       round(v / total * 100, 1),
+                })
+            # Solo incluir si hay variación significativa (no todos iguales)
+            pcts = [d['pct'] for d in dist]
+            if max(pcts) - min(pcts) > 2:
+                metricas.setdefault('concentracion_por_categoria', {})[col] = sorted(
+                    dist, key=lambda x: x['valor'], reverse=True
+                )[:10]  # top 10 para no saturar el contexto
+
         # Variaciones % entre filas consecutivas
+        variaciones_pct_vals = []
         if n >= 2:
             variaciones = []
             for i in range(1, n):
                 ant = valores[i - 1]
                 act = valores[i]
-                if ant != 0:
-                    pct = round((act - ant) / abs(ant) * 100, 1)
-                else:
-                    pct = None
+                pct = round((act - ant) / abs(ant) * 100, 1) if ant != 0 else None
                 label = str(dict(zip(cols, rows[i])).get(col_cat, i)) if col_cat else str(i)
                 variaciones.append({'en': label, 'variacion_pct': pct})
+                if pct is not None:
+                    variaciones_pct_vals.append(pct)
             metricas.setdefault('variaciones_pct', {})[col] = variaciones
 
-        # Outliers: filas con valor > media + 2*std o < media - 2*std
+        # Tendencia de las variaciones
+        if len(variaciones_pct_vals) >= 3:
+            positivas = sum(1 for v in variaciones_pct_vals if v > 0)
+            negativas = sum(1 for v in variaciones_pct_vals if v < 0)
+            total_var = len(variaciones_pct_vals)
+            if positivas / total_var >= 0.75:
+                tendencia = 'creciente'
+            elif negativas / total_var >= 0.75:
+                tendencia = 'decreciente'
+            else:
+                # Medir volatilidad: std de las variaciones
+                try:
+                    std_var = statistics.stdev(variaciones_pct_vals)
+                    tendencia = 'volatil' if std_var > 20 else 'estable'
+                except statistics.StatisticsError:
+                    tendencia = 'estable'
+            metricas.setdefault('tendencia_variaciones', {})[col] = tendencia
+
+        # Outliers: filas con valor > media ± 2*std
         if n >= 4:
             try:
                 media = statistics.mean(valores)
@@ -1582,16 +1624,17 @@ def pre_computar_metricas(resultado: dict) -> dict:
                     if std > 0 and abs(v - media) > 2 * std:
                         label = str(dict(zip(cols, rows[i])).get(col_cat, i)) if col_cat else str(i)
                         outs.append({
-                            'en':    label,
-                            'valor': round(v, 2),
+                            'en':               label,
+                            'valor':            round(v, 2),
                             'desviaciones_std': round((v - media) / std, 1),
+                            'direccion':        'alto' if v > media else 'bajo',
                         })
                 if outs:
                     metricas.setdefault('outliers', {})[col] = outs
             except statistics.StatisticsError:
                 pass
 
-        # Gaps: posiciones con valor 0 (ausencias en series temporales)
+        # Gaps: posiciones con valor 0
         gaps = []
         for i, v in enumerate(valores):
             if v == 0:
@@ -1599,6 +1642,59 @@ def pre_computar_metricas(resultado: dict) -> dict:
                 gaps.append(label)
         if gaps:
             metricas.setdefault('gaps_valor_cero', {})[col] = gaps
+
+    # — Ratios cruzados entre columnas numéricas —
+    # PVP promedio ponderado: si hay columna de CANTIDAD y columna de VALOR
+    cols_num_lower = {c.lower(): c for c in cols_num}
+    col_cantidad = next(
+        (v for k, v in cols_num_lower.items()
+         if any(x in k for x in ('cantidad', 'unidades', 'uds'))),
+        None
+    )
+    col_valor = next(
+        (v for k, v in cols_num_lower.items()
+         if any(x in k for x in ('valor', 'venta', 'cop', 'ingreso', 'total'))),
+        None
+    )
+    if col_cantidad and col_valor and col_cantidad != col_valor:
+        suma_cant  = sum(vectores[col_cantidad])
+        suma_valor = sum(vectores[col_valor])
+        if suma_cant > 0:
+            pvp_prom = round(suma_valor / suma_cant, 0)
+            metricas['pvp_promedio_ponderado'] = {
+                'valor':        pvp_prom,
+                'interpretacion': (
+                    'precio promedio por unidad vendida — '
+                    'caída indica descuentos o mix hacia referencias más baratas; '
+                    'alza indica referencias premium o reducción de descuentos'
+                ),
+            }
+
+    # Ratio de dos columnas numéricas si hay exactamente 2 y tienen nombres sugerentes
+    # ej: cambios/ventas = tasa devolución
+    if len(cols_num) == 2:
+        c1, c2 = cols_num
+        c1l, c2l = c1.lower(), c2.lower()
+        es_devolucion = (
+            any(x in c1l for x in ('cambio', 'devol', 'retorno')) or
+            any(x in c2l for x in ('cambio', 'devol', 'retorno'))
+        )
+        es_venta = (
+            any(x in c1l for x in ('venta', 'pos', 'unid')) or
+            any(x in c2l for x in ('venta', 'pos', 'unid'))
+        )
+        if es_devolucion and es_venta:
+            total_c1 = sum(vectores[c1])
+            total_c2 = sum(vectores[c2])
+            denominador = total_c2 if 'venta' in c2l or 'pos' in c2l else total_c1
+            numerador   = total_c1 if denominador == total_c2 else total_c2
+            if denominador > 0:
+                tasa = round(numerador / denominador * 100, 2)
+                metricas['tasa_devolucion_global'] = {
+                    'valor_pct': tasa,
+                    'alerta':    tasa > 5.0,
+                    'referencia': 'umbral de alerta: >5%. Tasa global historica: ~2.5%',
+                }
 
     return metricas
 
@@ -1682,7 +1778,7 @@ def agente_analista(
             )
 
         print(f'  [{MODELO}] Analista — ronda {ronda + 1}...')
-        respuesta_raw = llamar_llm(system_analista, prompt, temperatura=0.2)
+        respuesta_raw = llamar_llm(system_analista, prompt, temperatura=0.5)
 
         # Extraer JSON de la respuesta
         analisis = None
