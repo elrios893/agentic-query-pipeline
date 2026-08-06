@@ -21,6 +21,25 @@ logger = logging.getLogger(__name__)
 # Cliente API global
 api_client = APIClient(SERVER_URL)
 
+
+async def _send_safe(update, text: str) -> None:
+    """Envía un mensaje intentando primero MARKDOWN y haciendo fallback a texto plano."""
+    try:
+        await update.message.reply_text(
+            text,
+            parse_mode=ParseMode.MARKDOWN,
+            disable_web_page_preview=True,
+        )
+    except Exception:
+        # Si el markdown está mal formado, enviar como texto plano sin formato
+        try:
+            await update.message.reply_text(
+                text,
+                disable_web_page_preview=True,
+            )
+        except Exception as e:
+            logger.error(f"Error enviando mensaje (fallback): {e}")
+
 class TelegramHandlers:
     """Manejadores de eventos del bot"""
     
@@ -214,11 +233,7 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             mensajes = MessageFormatter.dividir_mensaje_largo(respuesta)
             
             for msg in mensajes:
-                await update.message.reply_text(
-                    msg,
-                    parse_mode=ParseMode.MARKDOWN,
-                    disable_web_page_preview=True
-                )
+                await _send_safe(update, msg)
             
             # Enviar imágenes si las hay
             if imagenes:
@@ -268,11 +283,11 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             
         except Exception as e:
             logger.error(f"Error procesando mensaje: {e}")
-            await mensaje_espera.delete()
-            await update.message.reply_text(
-                f"{EMOJIS['error']} Error inesperado: {str(e)}",
-                parse_mode=ParseMode.MARKDOWN
-            )
+            try:
+                await mensaje_espera.delete()
+            except Exception:
+                pass
+            await _send_safe(update, f"{EMOJIS['error']} Error inesperado: {str(e)}")
     
     @staticmethod
     async def descargar_archivo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
