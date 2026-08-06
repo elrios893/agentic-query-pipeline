@@ -76,6 +76,16 @@ class SessionManager:
         sesion = self.obtener(user_id)
         return sesion.archivos_generados if sesion else []
     
+    def resetear(self, user_id: int):
+        """Resetea el estado conversacional de una sesión (turno, historial, archivos)
+        pero conserva los datos de identidad del usuario."""
+        sesion = self.sesiones.get(user_id)
+        if sesion:
+            sesion.turno = 0
+            sesion.mensaje_anterior = None
+            sesion.contexto = {}
+            sesion.archivos_generados = []
+
     def limpiar_archivos(self, user_id: int):
         """Limpia los archivos generados"""
         sesion = self.obtener(user_id)

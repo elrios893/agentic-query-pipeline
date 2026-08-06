@@ -77,6 +77,18 @@ class APIClient:
             logger.error(f"Error descargando archivo: {str(e)}")
             return None
     
+    def reset_sesion(self, session_id: str) -> bool:
+        """Llama a POST /reset/{session_id} para borrar el historial del servidor."""
+        try:
+            response = self.session.post(
+                f"{self.server_url}/reset/{session_id}",
+                timeout=10,
+            )
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Error reseteando sesión en servidor: {e}")
+            return False
+
     def verificar_servidor(self) -> bool:
         """Verifica si el servidor está disponible"""
         try:

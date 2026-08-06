@@ -53,8 +53,9 @@ def main():
     app.add_handler(CommandHandler("help",    TelegramHandlers.ayuda))
     app.add_handler(CommandHandler("sesion",  TelegramHandlers.sesion))
     app.add_handler(CommandHandler("session", TelegramHandlers.sesion))
-    app.add_handler(CommandHandler("limpiar", TelegramHandlers.limpiar))
-    app.add_handler(CommandHandler("clear",   TelegramHandlers.limpiar))
+    app.add_handler(CommandHandler("limpiar",  TelegramHandlers.limpiar))
+    app.add_handler(CommandHandler("clear",    TelegramHandlers.limpiar))
+    app.add_handler(CommandHandler("reset",    TelegramHandlers.reset))
     app.add_handler(CommandHandler("analisis", TelegramHandlers.analisis))
 
     # Handler para mensajes de texto
@@ -73,6 +74,7 @@ def main():
             ("start",    "Iniciar el bot"),
             ("ayuda",    "Mostrar ayuda"),
             ("analisis", "Activar agente analista"),
+            ("reset",    "Reiniciar conversacion y borrar historial"),
             ("sesion",   "Ver informacion de sesion"),
             ("limpiar",  "Limpiar archivos temporales"),
         ])

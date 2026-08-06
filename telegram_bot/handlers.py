@@ -238,11 +238,41 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
         """Comando /limpiar — limpia archivos temporales"""
         user_id = update.effective_user.id
         session_manager.limpiar_archivos(user_id)
-        
+
         await update.message.reply_text(
             f"{EMOJIS['success']} Archivos temporales limpiados.",
             parse_mode=ParseMode.MARKDOWN
         )
+
+    @staticmethod
+    async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Comando /reset — borra el historial de conversación y reinicia el turno."""
+        user = update.effective_user
+        session_id = f"telegram_{user.id}"
+
+        # 1. Borrar memoria en el servidor (historial + DataFrames)
+        ok_servidor = api_client.reset_sesion(session_id)
+
+        # 2. Resetear sesión local (turno, contexto, archivos)
+        session_manager.resetear(user.id)
+
+        # 3. Limpiar datos en memoria de contexto de Telegram
+        context.user_data.clear()
+
+        if ok_servidor:
+            msg = (
+                f"{EMOJIS['success']} *Conversación reiniciada*\n\n"
+                f"El historial y la memoria de esta sesión han sido borrados. "
+                f"Puedes empezar una consulta nueva."
+            )
+        else:
+            msg = (
+                f"{EMOJIS['warning']} *Sesión reiniciada localmente*\n\n"
+                f"No se pudo contactar al servidor para borrar el historial remoto, "
+                f"pero el estado local fue reseteado."
+            )
+
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
 
     @staticmethod
     async def analisis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
