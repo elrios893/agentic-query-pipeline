@@ -386,42 +386,63 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             imagenes = resultado.get('imagenes', [])
             ruta_excel = resultado.get('ruta_excel', '')
             ruta_docx = resultado.get('ruta_docx', '')
-            
-            # Dividir mensaje si es muy largo
-            for msg in MessageFormatter.dividir_mensaje_largo(md_a_telegram(respuesta)):
-                await _send_safe(update, msg)
 
-            # Enviar imágenes
-            await _enviar_imagenes(update, respuesta, imagenes)
-
-            # Enviar botones de descarga si hay archivos
-            if ruta_excel or ruta_docx:
-                botones = []
+            if tipo == 'informe' and ruta_docx:
+                # Para informes: no enviar el contenido completo (es enorme),
+                # solo confirmar que se generó y ofrecer descarga directa.
+                nombre_archivo = Path(ruta_docx).name
+                botones = [
+                    InlineKeyboardButton(
+                        f"{EMOJIS['report']} Descargar Informe (.docx)",
+                        callback_data=f"download_docx_{user.id}",
+                    )
+                ]
                 if ruta_excel:
-                    botones.append(
-                        InlineKeyboardButton(
+                    botones.append(InlineKeyboardButton(
+                        f"{EMOJIS['download']} Descargar Excel",
+                        callback_data=f"download_excel_{user.id}",
+                    ))
+                keyboard = InlineKeyboardMarkup([botones])
+                await update.message.reply_text(
+                    f"{EMOJIS['report']} *Informe generado correctamente*\n\n"
+                    f"Archivo: `{nombre_archivo}`\n\n"
+                    f"Descárgalo con el botón de abajo para verlo completo.",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=keyboard,
+                )
+                context.user_data['ultima_ruta_excel'] = ruta_excel
+                context.user_data['ultima_ruta_docx']  = ruta_docx
+                # Enviar imágenes del informe si las hay
+                await _enviar_imagenes(update, respuesta, imagenes)
+            else:
+                # Consulta normal: enviar el texto completo convertido
+                for msg in MessageFormatter.dividir_mensaje_largo(md_a_telegram(respuesta)):
+                    await _send_safe(update, msg)
+
+                # Enviar imágenes
+                await _enviar_imagenes(update, respuesta, imagenes)
+
+                # Botones de descarga si hay archivos
+                if ruta_excel or ruta_docx:
+                    botones = []
+                    if ruta_excel:
+                        botones.append(InlineKeyboardButton(
                             f"{EMOJIS['download']} Descargar Excel",
-                            callback_data=f"download_excel_{user.id}"
-                        )
-                    )
-                if ruta_docx:
-                    botones.append(
-                        InlineKeyboardButton(
+                            callback_data=f"download_excel_{user.id}",
+                        ))
+                    if ruta_docx:
+                        botones.append(InlineKeyboardButton(
                             f"{EMOJIS['report']} Descargar Informe",
-                            callback_data=f"download_docx_{user.id}"
+                            callback_data=f"download_docx_{user.id}",
+                        ))
+                    if botones:
+                        keyboard = InlineKeyboardMarkup([botones])
+                        await update.message.reply_text(
+                            f"{EMOJIS['file']} Archivos disponibles para descargar:",
+                            reply_markup=keyboard,
                         )
-                    )
-                
-                if botones:
-                    keyboard = InlineKeyboardMarkup([botones])
-                    await update.message.reply_text(
-                        f"{EMOJIS['file']} Archivos disponibles para descargar:",
-                        reply_markup=keyboard
-                    )
-                    
-                    # Guardar rutas en contexto
-                    context.user_data['ultima_ruta_excel'] = ruta_excel
-                    context.user_data['ultima_ruta_docx'] = ruta_docx
+                        context.user_data['ultima_ruta_excel'] = ruta_excel
+                        context.user_data['ultima_ruta_docx']  = ruta_docx
             
             # Incrementar turno
             session_manager.incrementar_turno(user.id)
