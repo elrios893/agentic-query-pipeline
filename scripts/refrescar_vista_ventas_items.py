@@ -2,14 +2,11 @@
 """
 scripts/refrescar_vista_ventas_items.py
 Refresca la vista materializada ventas_unificada en prueba_analisis.
+La vista usa la tabla 'items' (maestra de items) como fuente de GRUPO normalizado.
 
 Uso:
     python scripts/refrescar_vista_ventas_items.py
-    python scripts/refrescar_vista_ventas_items.py --concurrently   (sin bloquear lecturas)
-    python scripts/refrescar_vista_ventas_items.py --dry-run        (solo verificar conexión)
-
-El flag --concurrently requiere que la vista tenga un índice UNIQUE.
-Por defecto se usa REFRESH sin CONCURRENTLY (bloquea lecturas brevemente).
+    python scripts/refrescar_vista_ventas_items.py --dry-run   (solo verificar, sin refrescar)
 
 Retorna exit code 0 si OK, 1 si error.
 """
@@ -60,15 +57,14 @@ CONN_PARAMS = dict(
 # Lógica principal
 # ---------------------------------------------------------------------------
 
-def refrescar(concurrently: bool = False, dry_run: bool = False) -> bool:
+def refrescar(dry_run: bool = False) -> bool:
     """
     Ejecuta REFRESH MATERIALIZED VIEW.
 
     Returns:
         True si éxito, False si error.
     """
-    modo = 'CONCURRENTLY ' if concurrently else ''
-    sql_refresh = f'REFRESH MATERIALIZED VIEW {modo}{VISTA};'
+    sql_refresh = f'REFRESH MATERIALIZED VIEW {VISTA};'
     sql_count   = f'SELECT COUNT(*) FROM {VISTA};'
     sql_cobertura = f"""
         SELECT
@@ -83,8 +79,7 @@ def refrescar(concurrently: bool = False, dry_run: bool = False) -> bool:
 
     ts_inicio = datetime.now()
     print(f'[{ts_inicio:%Y-%m-%d %H:%M:%S}] Iniciando refresco de {VISTA}...')
-    if concurrently:
-        print('  Modo: CONCURRENTLY (sin bloquear lecturas)')
+    print(f'  Fuente de normalizacion: tabla items (maestra de items)')
     if dry_run:
         print(f'  Modo: DRY-RUN -- solo se verifica la conexion, no se refresca.')
 
@@ -117,7 +112,6 @@ def refrescar(concurrently: bool = False, dry_run: bool = False) -> bool:
             conn.close()
             return True
 
-        # Ejecutar el refresco
         t0 = time.time()
         print(f'  Ejecutando: {sql_refresh.strip()}')
         cur.execute(sql_refresh)
@@ -160,21 +154,13 @@ def main():
         description='Refresca la vista materializada ventas_unificada.'
     )
     parser.add_argument(
-        '--concurrently',
-        action='store_true',
-        help='Refrescar sin bloquear lecturas (requiere índice UNIQUE en la vista).',
-    )
-    parser.add_argument(
         '--dry-run',
         action='store_true',
-        help='Solo verificar conexión y mostrar estado actual sin refrescar.',
+        help='Solo verificar conexion y mostrar estado actual sin refrescar.',
     )
     args = parser.parse_args()
 
-    ok = refrescar(
-        concurrently=args.concurrently,
-        dry_run=args.dry_run,
-    )
+    ok = refrescar(dry_run=args.dry_run)
     sys.exit(0 if ok else 1)
 
 
