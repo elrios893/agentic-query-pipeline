@@ -2,23 +2,36 @@
 prompt_logger.py
 Registra cada interaccion del usuario en un archivo JSON diario dentro de prompts/.
 
+Punto unico de registro: src/server.py llama a registrar_prompt() una sola vez
+por request de /chat, sin importar si vino de Streamlit o de Telegram. Ambas
+interfaces mandan su origen en el campo "origen" del request y ese valor se
+persiste como "prompt_source" — asi todo queda en el mismo archivo diario con
+trazabilidad de fuente.
+
 Estructura de cada entrada:
 {
     "id": "uuid4",
     "timestamp": "2026-07-27T10:30:00",
     "pregunta": "ventas por departamento",
-    "tipo": "consulta" | "informe" | "grafico",
+    "tipo": "consulta" | "informe" | "grafico" | "sobre_datos" | "conversacional" | "error",
+    "prompt_source": "streamlit" | "telegram",
     "modelo_llm": "llama-3.3-70b-versatile",
     "proveedor_llm": "groq",
     "duracion_seg": 4.2,
     "exito": true,
     "archivos_generados": ["reports/charts/chart_xxx.png"],
     "sql_queries": [
-        {"nombre": "ventas_departamento", "sql": "SELECT ..."}
+        {"nombre": "consulta_principal", "sql": "SELECT ..."},
+        {"nombre": "analista_ronda_1: por que cayeron las ventas de caballero", "sql": "SELECT ..."}
     ],
     "feedback": "bueno" | "malo" | "regular" | "",
     "feedback_msg": "La respuesta fue precisa y clara"
 }
+
+sql_queries acumula TODAS las consultas SQL ejecutadas para producir la
+respuesta, no solo la primera: si el agente analista pidio rondas adicionales
+de datos, o un informe ejecuto una consulta por bloque, cada una queda como
+una entrada separada con su "nombre" describiendo de donde salio.
 
 Concurrencia
 ------------
@@ -87,6 +100,7 @@ def registrar_prompt(
     modelo_llm: str = '',
     proveedor_llm: str = '',
     sql_queries: list[dict] | None = None,
+    prompt_source: str = '',
 ) -> str:
     """
     Registra una nueva interaccion. Devuelve el id generado
@@ -95,15 +109,19 @@ def registrar_prompt(
     Parametros
     ----------
     sql_queries : list[dict] | None
-        Lista de consultas SQL ejecutadas durante la interaccion.
-        Cada dict debe tener al menos {"nombre": str, "sql": str}.
-        Ej: [{"nombre": "ventas_depto", "sql": "SELECT ..."}]
+        Lista de TODAS las consultas SQL ejecutadas para producir la
+        respuesta (consulta principal + rondas del agente analista +
+        consultas por bloque de un informe + consultas complementarias
+        de SOBRE_DATOS). Cada dict debe tener al menos {"nombre": str, "sql": str}.
+    prompt_source : str
+        De donde vino la interaccion: "streamlit" | "telegram".
     """
     entrada = {
         'id': str(uuid.uuid4()),
         'timestamp': datetime.now().isoformat(timespec='seconds'),
         'pregunta': pregunta,
         'tipo': tipo,
+        'prompt_source': prompt_source,
         'modelo_llm': modelo_llm,
         'proveedor_llm': proveedor_llm,
         'duracion_seg': round(duracion_seg, 2),

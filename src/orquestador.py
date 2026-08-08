@@ -1199,6 +1199,7 @@ Responde con un JSON con esta estructura exacta:
     # genera SQL correcta y PostgreSQL reporta errores reales si los hay)
     # ------------------------------------------------------------------
     resultados = {}
+    sql_queries_ejecutadas = []  # trazabilidad: una entrada por bloque efectivamente ejecutado
     for item in plan['consultas']:
         nombre = item.get('nombre', 'consulta')
         sql_raw = item.get('sql', '').strip()
@@ -1215,6 +1216,7 @@ Responde con un JSON con esta estructura exacta:
         resultado = ejecutar_consulta(sql_limpia, limite=500)
         if resultado.get('success'):
             resultados[nombre] = resultado
+            sql_queries_ejecutadas.append({'nombre': f'informe_bloque_{nombre}', 'sql': sql_limpia})
             print(f'  OK: {resultado["total_filas"]} fila(s)')
         else:
             # Un error real de PostgreSQL — intentar corregir UNA vez con el LLM
@@ -1229,6 +1231,7 @@ Responde con un JSON con esta estructura exacta:
             resultado2 = ejecutar_consulta(sql_corregida, limite=500)
             if resultado2.get('success'):
                 resultados[nombre] = resultado2
+                sql_queries_ejecutadas.append({'nombre': f'informe_bloque_{nombre}_corregida', 'sql': sql_corregida})
                 print(f'  OK (corregida): {resultado2["total_filas"]} fila(s)')
             else:
                 print(f'  Omitiendo {nombre}: {resultado2.get("error")}')
@@ -1395,6 +1398,7 @@ El gráfico anterior muestra que Antioquia domina...
         'periodo':         '',   # el servidor puede extraerlo del md si necesita
         'resultado_sql':   None, # informes no exponen un único df
         'sql_usada':       None,
+        'sql_queries':     sql_queries_ejecutadas,  # una entrada por bloque ejecutado
         'imagenes':        [],
         'ruta_excel':      '',
         'analisis':        None,
@@ -1705,6 +1709,21 @@ def pre_computar_metricas(resultado: dict) -> dict:
 
 MAX_RONDAS_ANALISTA = 3
 
+
+def _sql_queries_desde_acumulados(datos_acumulados: list[dict]) -> list[dict]:
+    """Traduce datos_acumulados (rondas del analista) a la lista plana
+    {"nombre", "sql"} que espera prompt_logger, para trazabilidad completa
+    de todas las consultas que el analista disparo (no solo la inicial)."""
+    queries = []
+    for d in datos_acumulados:
+        if d['ronda'] == 0:
+            nombre = 'consulta_principal'
+        else:
+            nombre = f"analista_ronda_{d['ronda']}: {d['descripcion']}"
+        queries.append({'nombre': nombre, 'sql': d['sql']})
+    return queries
+
+
 def agente_analista(
     pregunta: str,
     resultado_inicial: dict,
@@ -1799,6 +1818,7 @@ def agente_analista(
                 'datos_usados': [{'descripcion': d['descripcion'], 'filas': d['resultado'].get('total_filas', 0), 'columnas': d['resultado'].get('columns', [])} for d in datos_acumulados],
                 'conclusion': respuesta_raw,
                 'preguntas_sugeridas': [],
+                'sql_queries': _sql_queries_desde_acumulados(datos_acumulados),
             }
 
         estado = analisis.get('estado', 'completo')
@@ -1814,6 +1834,7 @@ def agente_analista(
                     }
                     for d in datos_acumulados
                 ]
+            analisis['sql_queries'] = _sql_queries_desde_acumulados(datos_acumulados)
             print(f'  [analista] Análisis completo en ronda {ronda + 1}.')
             return analisis
 
@@ -1826,6 +1847,7 @@ def agente_analista(
         if not pregunta_adicional:
             print('  [analista] Pidió datos adicionales pero sin pregunta. Terminando.')
             analisis['estado'] = 'completo'
+            analisis['sql_queries'] = _sql_queries_desde_acumulados(datos_acumulados)
             return analisis
 
         print(f'  [analista] Solicita datos adicionales (ronda {ronda + 1}): {pregunta_adicional}')
@@ -1847,6 +1869,7 @@ def agente_analista(
             analisis['estado'] = 'completo'
             if 'datos_usados' not in analisis:
                 analisis['datos_usados'] = []
+            analisis['sql_queries'] = _sql_queries_desde_acumulados(datos_acumulados)
             return analisis
 
         print(f'  Complementaria OK: {resultado_adicional.get("total_filas", 0)} filas obtenidas.')
@@ -1858,7 +1881,11 @@ def agente_analista(
         })
 
     # Nunca debería llegar aquí, pero por seguridad:
-    return {'estado': 'completo', 'conclusion': 'Análisis completado.', 'patrones': [], 'anomalias': [], 'hipotesis': [], 'datos_usados': [], 'preguntas_sugeridas': []}
+    return {
+        'estado': 'completo', 'conclusion': 'Análisis completado.', 'patrones': [],
+        'anomalias': [], 'hipotesis': [], 'datos_usados': [], 'preguntas_sugeridas': [],
+        'sql_queries': _sql_queries_desde_acumulados(datos_acumulados),
+    }
 
 
 def procesar_consulta(pregunta: str, contexto_refinamiento: dict | None = None):
@@ -2046,11 +2073,21 @@ explícitamente pida cambiarlos.
     print('=' * 60)
     print(respuesta_final)
 
+    # Trazabilidad completa: consulta principal + (si hubo agente analista)
+    # todas las rondas complementarias que este disparo.
+    sql_queries = [{'nombre': 'consulta_principal', 'sql': sql_final}]
+    if analisis_profundo and analisis_profundo.get('sql_queries'):
+        # La ronda 0 del analista es la misma consulta_principal — no duplicar.
+        sql_queries.extend(
+            q for q in analisis_profundo['sql_queries'] if q['nombre'] != 'consulta_principal'
+        )
+
     return {
         'tipo':          'consulta',
         'respuesta':     respuesta_final,
         'resultado_sql': resultado,
         'sql_usada':     sql_final,
+        'sql_queries':   sql_queries,
         'imagenes':      imagenes_chat,
         'ruta_excel':    ruta_excel,
         'analisis':      analisis_profundo,

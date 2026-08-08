@@ -25,7 +25,8 @@ class APIClient:
                 f"{self.server_url}/chat",
                 json={
                     "session_id": session_id,
-                    "pregunta": pregunta
+                    "pregunta": pregunta,
+                    "origen": "telegram"
                 },
                 timeout=self.timeout
             )

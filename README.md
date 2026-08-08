@@ -57,6 +57,8 @@ Pregunta del usuario
 ```
 ├── src/
 │   ├── orquestador.py         ← Orquestador principal (cadena de agentes)
+│   ├── server.py               ← Servidor FastAPI persistente (usado por Streamlit y Telegram)
+│   ├── prompt_logger.py       ← Logger de prompts + feedback en JSON (registro centralizado, llamado desde server.py)
 │   └── ingesta_postgres.py    ← Carga TXT → PostgreSQL con dedup MD5
 │
 ├── agents/
@@ -76,12 +78,14 @@ Pregunta del usuario
 │   ├── informe_ventas/        ← Skill de informes (bloques A–N, macro→micro)
 │   └── graficos_ventas/       ← Skill de decisión de gráficos
 │
-├── ui/
-│   ├── streamlit_app.py       ← Interfaz web principal
-│   ├── db.py                  ← SQLite: historial de informes y gráficos
-│   └── prompt_logger.py       ← Logger de prompts + feedback en JSON
+├── telegram_bot/               ← Bot de Telegram (habla con src/server.py vía HTTP)
 │
-├── prompts/                   ← Logs diarios de uso y feedback (gitignored)
+├── ui/
+│   ├── streamlit_app.py       ← Interfaz web principal (habla con src/server.py vía HTTP)
+│   └── db.py                  ← SQLite: historial de informes y gráficos
+│
+├── prompts/                   ← Logs diarios de uso y feedback, un archivo por día
+│                                  compartido por Streamlit y Telegram (gitignored)
 ├── reports/                   ← Informes .docx y gráficos .png (gitignored)
 ├── excel_sheets/              ← Archivos .xlsx exportados (gitignored)
 ├── data_samples/              ← Archivos TXT fuente (gitignored)

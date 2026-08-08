@@ -15,7 +15,7 @@ sys.path.insert(0, str(BASE_DIR))
 load_dotenv(BASE_DIR / '.env')
 
 from ui.db import init_db, guardar_item, listar_items, obtener_item
-from ui.prompt_logger import registrar_prompt, actualizar_feedback
+from src.prompt_logger import registrar_prompt, actualizar_feedback
 
 # URL del servidor FastAPI
 SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:8000')
@@ -201,13 +201,6 @@ if st.session_state.vista == 'item' and st.session_state.item_id:
 # ---------------------------------------------------------------------------
 # Vista chat
 # ---------------------------------------------------------------------------
-def _detectar_tipo(pregunta: str, es_informe: bool) -> str:
-    if es_informe:
-        return 'informe'
-    patrones = re.compile(r'(grafic\w*|chart|visualiza\w*|barras|torta|linea|tendencia)', re.IGNORECASE)
-    return 'grafico' if patrones.search(pregunta) else 'consulta'
-
-
 def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool, str]:
     """
     Envía la pregunta al servidor FastAPI y procesa la respuesta.
@@ -217,7 +210,7 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool, str]:
     try:
         resp = requests.post(
             f'{SERVER_URL}/chat',
-            json={'session_id': SESSION_ID, 'pregunta': pregunta},
+            json={'session_id': SESSION_ID, 'pregunta': pregunta, 'origen': 'streamlit'},
             timeout=660,  # 11 minutos — mayor al timeout interno del servidor
         )
         resp.raise_for_status()
@@ -270,31 +263,28 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool, str]:
                 imagenes.append(ruta_norm)
                 hay_nuevos = True
 
-        # Registrar en prompt_logger
-        proveedor = os.environ.get('LLM_PROVIDER', '')
-        modelo    = os.environ.get(f'{proveedor.upper()}_MODEL', '')
-        tipo_log  = _detectar_tipo(pregunta, es_informe)
-        duracion  = time.time() - t0
-        prompt_id = registrar_prompt(
-            pregunta, tipo_log, duracion, True,
-            imagenes, modelo, proveedor, []
-        )
+        # El registro del prompt (incluyendo SQL usada) ya lo hizo el servidor
+        # de forma centralizada — aquí solo recuperamos el id para el feedback.
+        prompt_id = data.get('log_id', '')
         st.session_state.ultimo_prompt_id = prompt_id
         st.session_state.feedback_dado    = False
 
         return respuesta_txt, imagenes, hay_nuevos, es_informe, ruta_excel
 
     except requests.exceptions.ConnectionError:
+        # El servidor nunca llegó a procesar la pregunta — no hay nada que
+        # registrar del lado servidor, así que se loguea aquí como fallback.
+        registrar_prompt(pregunta, 'error', time.time() - t0, False, prompt_source='streamlit')
         return (
             '**Error:** No se pudo conectar con el servidor. '
             'Asegúrate de que el servidor esté corriendo con: `uvicorn src.server:app --port 8000`',
             [], False, False, ''
         )
     except requests.exceptions.Timeout:
-        registrar_prompt(pregunta, 'consulta', time.time() - t0, False)
+        registrar_prompt(pregunta, 'error', time.time() - t0, False, prompt_source='streamlit')
         return 'La consulta tardó demasiado (más de 11 minutos). Intenta con una pregunta más simple.', [], False, False, ''
     except Exception as e:
-        registrar_prompt(pregunta, 'consulta', time.time() - t0, False)
+        registrar_prompt(pregunta, 'error', time.time() - t0, False, prompt_source='streamlit')
         return f'Error inesperado: {str(e)}', [], False, False, ''
 
 

@@ -50,6 +50,7 @@ from src.orquestador import (
     leer_instrucciones,
     _reglas_gen,
 )
+from src.prompt_logger import registrar_prompt
 from tools.tool_pandas import ejecutar_operacion, catalogo_para_llm
 
 # ---------------------------------------------------------------------------
@@ -75,6 +76,7 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     session_id: str
     pregunta:   str
+    origen:     str = 'streamlit'  # 'streamlit' | 'telegram' — trazabilidad de la fuente
 
 class ChatResponse(BaseModel):
     respuesta:       str
@@ -86,6 +88,7 @@ class ChatResponse(BaseModel):
     df_creado:       Optional[str] = None   # nombre del df generado en este turno
     turno:           int = 0
     duracion_seg:    float = 0.0
+    log_id:          str = ''      # id de la entrada en prompts/prompts_YYYYMMDD.json
 
 # ---------------------------------------------------------------------------
 # Endpoint principal
@@ -127,57 +130,71 @@ def chat(req: ChatRequest):
     df_creado_nom = None
     resultado_sql = None
     sql_usada     = None
+    sql_queries   = []   # trazabilidad completa: TODAS las consultas SQL de este turno
 
-    if ruta in ('NUEVA_CONSULTA', 'REFINAMIENTO'):
-        # ----------------------------------------------------------------
-        # Llamar al orquestador directamente (función Python, no subprocess)
-        # ----------------------------------------------------------------
-        contexto_ref = None
-        if ruta == 'REFINAMIENTO':
-            contexto_ref = _construir_contexto_refinamiento(session_id, clasificacion)
+    try:
+        if ruta in ('NUEVA_CONSULTA', 'REFINAMIENTO'):
+            # ----------------------------------------------------------------
+            # Llamar al orquestador directamente (función Python, no subprocess)
+            # ----------------------------------------------------------------
+            contexto_ref = None
+            if ruta == 'REFINAMIENTO':
+                contexto_ref = _construir_contexto_refinamiento(session_id, clasificacion)
 
-        if es_intencion_informe(pregunta):
-            resultado = generar_informe(pregunta)
-            tipo      = 'informe'
-            ruta_docx = resultado.get('ruta_docx', '')
-        else:
-            resultado = procesar_consulta(pregunta, contexto_refinamiento=contexto_ref)
-            tipo      = resultado.get('tipo', 'consulta')
+            if es_intencion_informe(pregunta):
+                resultado = generar_informe(pregunta)
+                tipo      = 'informe'
+                ruta_docx = resultado.get('ruta_docx', '')
+            else:
+                resultado = procesar_consulta(pregunta, contexto_refinamiento=contexto_ref)
+                tipo      = resultado.get('tipo', 'consulta')
 
-        respuesta_txt = resultado.get('respuesta', '')
-        imagenes      = resultado.get('imagenes', [])
-        ruta_excel    = resultado.get('ruta_excel', '')
-        resultado_sql = resultado.get('resultado_sql')
-        sql_usada     = resultado.get('sql_usada', '')
+            respuesta_txt = resultado.get('respuesta', '')
+            imagenes      = resultado.get('imagenes', [])
+            ruta_excel    = resultado.get('ruta_excel', '')
+            resultado_sql = resultado.get('resultado_sql')
+            sql_usada     = resultado.get('sql_usada', '')
+            sql_queries   = resultado.get('sql_queries', [])
 
-        # Crear DataFrame en sesión si hay resultado SQL válido
-        if resultado_sql and resultado_sql.get('success') and resultado_sql.get('rows'):
-            df_creado_nom = store.siguiente_nombre_df(session_id)
-            df = _resultado_a_df(resultado_sql)
-            descripcion = _inferir_descripcion(pregunta, resultado_sql)
-            store.crear_df(
-                session_id=session_id,
-                nombre=df_creado_nom,
-                df=df,
-                descripcion=descripcion,
-                sql_original=sql_usada or '',
+            # Crear DataFrame en sesión si hay resultado SQL válido
+            if resultado_sql and resultado_sql.get('success') and resultado_sql.get('rows'):
+                df_creado_nom = store.siguiente_nombre_df(session_id)
+                df = _resultado_a_df(resultado_sql)
+                descripcion = _inferir_descripcion(pregunta, resultado_sql)
+                store.crear_df(
+                    session_id=session_id,
+                    nombre=df_creado_nom,
+                    df=df,
+                    descripcion=descripcion,
+                    sql_original=sql_usada or '',
+                )
+                print(f'[SERVER] DataFrame creado: {df_creado_nom} ({len(df)} filas)')
+
+        elif ruta == 'SOBRE_DATOS':
+            # ----------------------------------------------------------------
+            # Responder usando Pandas sobre datos en memoria
+            # ----------------------------------------------------------------
+            respuesta_txt, tipo, sql_queries = _manejar_sobre_datos(
+                session_id, pregunta, clasificacion, contexto
             )
-            print(f'[SERVER] DataFrame creado: {df_creado_nom} ({len(df)} filas)')
 
-    elif ruta == 'SOBRE_DATOS':
-        # ----------------------------------------------------------------
-        # Responder usando Pandas sobre datos en memoria
-        # ----------------------------------------------------------------
-        respuesta_txt, tipo = _manejar_sobre_datos(
-            session_id, pregunta, clasificacion, contexto
+        elif ruta == 'CONVERSACIONAL':
+            # ----------------------------------------------------------------
+            # Respuesta directa con el LLM usando el historial como contexto
+            # ----------------------------------------------------------------
+            respuesta_txt = _manejar_conversacional(pregunta, contexto)
+            tipo = 'conversacional'
+    except Exception as e:
+        duracion_error = round(time.time() - t_inicio, 2)
+        print(f'[SERVER] ERROR: {e}')
+        registrar_prompt(
+            pregunta=pregunta,
+            tipo='error',
+            duracion_seg=duracion_error,
+            exito=False,
+            prompt_source=req.origen,
         )
-
-    elif ruta == 'CONVERSACIONAL':
-        # ----------------------------------------------------------------
-        # Respuesta directa con el LLM usando el historial como contexto
-        # ----------------------------------------------------------------
-        respuesta_txt = _manejar_conversacional(pregunta, contexto)
-        tipo = 'conversacional'
+        raise HTTPException(status_code=500, detail=str(e))
 
     # ------------------------------------------------------------------
     # 3. Guardar turno en historial
@@ -200,6 +217,29 @@ def chat(req: ChatRequest):
     duracion = round(time.time() - t_inicio, 2)
     print(f'[SERVER] Completado en {duracion}s — ruta={ruta} tipo={tipo}')
 
+    # ------------------------------------------------------------------
+    # 4. Registro centralizado del prompt — único punto para Streamlit y Telegram
+    # ------------------------------------------------------------------
+    proveedor_llm = os.environ.get('LLM_PROVIDER', '')
+    modelo_llm    = os.environ.get(f'{proveedor_llm.upper()}_MODEL', '') if proveedor_llm else ''
+    archivos_generados = list(imagenes)
+    if ruta_excel:
+        archivos_generados.append(ruta_excel)
+    if ruta_docx:
+        archivos_generados.append(ruta_docx)
+
+    log_id = registrar_prompt(
+        pregunta=pregunta,
+        tipo=tipo,
+        duracion_seg=duracion,
+        exito=True,
+        archivos_generados=archivos_generados,
+        modelo_llm=modelo_llm,
+        proveedor_llm=proveedor_llm,
+        sql_queries=sql_queries,
+        prompt_source=req.origen,
+    )
+
     return ChatResponse(
         respuesta=respuesta_txt,
         ruta=ruta,
@@ -208,6 +248,7 @@ def chat(req: ChatRequest):
         ruta_excel=ruta_excel,
         ruta_docx=ruta_docx,
         df_creado=df_creado_nom,
+        log_id=log_id,
         turno=sesion.turno_actual,
         duracion_seg=duracion,
     )
@@ -301,12 +342,15 @@ def _manejar_sobre_datos(
     pregunta: str,
     clasificacion: dict,
     contexto: dict,
-) -> tuple[str, str]:
+) -> tuple[str, str, list[dict]]:
     """
     Maneja la ruta SOBRE_DATOS.
     1. Intenta ejecutar la operación Pandas sugerida por el enrutador.
     2. Si falla o es insuficiente, hace una consulta adicional a la BD.
     3. Redacta la respuesta con el LLM usando el resultado exacto.
+
+    Devuelve (respuesta, tipo, sql_queries) — sql_queries queda vacía si la
+    respuesta salió de Pandas (sin ir a la BD), para trazabilidad.
     """
     df_nombre         = clasificacion.get('df_relevante')
     operacion         = clasificacion.get('operacion_sugerida')
@@ -331,7 +375,7 @@ def _manejar_sobre_datos(
     # Si Pandas no pudo → consulta adicional a BD (igual que agente_analista)
     if resultado_pandas is None:
         print('  [SOBRE_DATOS] Sin resultado Pandas — intentando consulta adicional a BD...')
-        resultado_adicional = _consulta_adicional_sobre_datos(
+        resultado_adicional, sql_adicional = _consulta_adicional_sobre_datos(
             pregunta, session_id, contexto
         )
         if resultado_adicional:
@@ -341,12 +385,14 @@ def _manejar_sobre_datos(
                 descripcion_calc='',
                 resultado_bd=resultado_adicional,
             )
-            return respuesta, 'sobre_datos_bd'
+            sql_queries = [{'nombre': 'sobre_datos_complementaria', 'sql': sql_adicional}]
+            return respuesta, 'sobre_datos_bd', sql_queries
         else:
             return (
                 'No pude encontrar los datos necesarios para responder esta pregunta con la información disponible. '
                 '¿Podrías reformularla o hacer una nueva consulta?',
                 'error',
+                [],
             )
 
     # Redactar respuesta con el resultado exacto de Pandas
@@ -356,17 +402,19 @@ def _manejar_sobre_datos(
         descripcion_calc=descripcion_calc,
         resultado_bd=None,
     )
-    return respuesta, 'sobre_datos'
+    return respuesta, 'sobre_datos', []
 
 
 def _consulta_adicional_sobre_datos(
     pregunta: str,
     session_id: str,
     contexto: dict,
-) -> dict | None:
+) -> tuple[dict | None, str]:
     """
     Hace una sola consulta adicional a la BD para cubrir lo que Pandas no pudo.
     Reutiliza el generador del orquestador con contexto de la sesión.
+
+    Devuelve (resultado, sql) — sql viene vacío si no se llegó a generar/ejecutar.
     """
     from src.orquestador import generar_sql_y_validar, ejecutar_consulta
     from src.orquestador import leer_instrucciones, _reglas_gen, _reglas_val
@@ -389,15 +437,16 @@ def _consulta_adicional_sobre_datos(
             f'Esta consulta adicional debe complementar esos datos.'
         )
 
+    sql = ''
     try:
         sql = generar_sql_y_validar(pregunta + ctx_str, system_gen, system_val)
         resultado = ejecutar_consulta(sql)
         if resultado.get('success') and resultado.get('rows'):
-            return resultado
+            return resultado, sql
     except Exception as e:
         print(f'  [SOBRE_DATOS] Error en consulta adicional: {e}')
 
-    return None
+    return None, sql
 
 
 def _redactar_sobre_datos(
