@@ -6,6 +6,7 @@ Mantiene sesiones, DataFrames y historial en memoria entre mensajes.
 Endpoints:
   POST /chat              — procesa un mensaje del usuario
   POST /reset/{session_id} — reinicia una sesión manualmente
+  POST /feedback          — registra feedback de una respuesta (por log_id)
   GET  /health            — estado del servidor
   GET  /sessions          — resumen de sesiones activas (debug)
 """
@@ -50,7 +51,7 @@ from src.orquestador import (
     leer_instrucciones,
     _reglas_gen,
 )
-from src.prompt_logger import registrar_prompt
+from src.prompt_logger import registrar_prompt, actualizar_feedback
 from tools.tool_pandas import ejecutar_operacion, catalogo_para_llm
 
 # ---------------------------------------------------------------------------
@@ -77,6 +78,11 @@ class ChatRequest(BaseModel):
     session_id: str
     pregunta:   str
     origen:     str = 'streamlit'  # 'streamlit' | 'telegram' — trazabilidad de la fuente
+
+class FeedbackRequest(BaseModel):
+    log_id:       str
+    feedback:     str   # 'bueno' | 'regular' | 'malo'
+    feedback_msg: str = ''
 
 class ChatResponse(BaseModel):
     respuesta:       str
@@ -262,6 +268,21 @@ def chat(req: ChatRequest):
 def reset_sesion(session_id: str):
     store.eliminar_sesion(session_id)
     return {'ok': True, 'session_id': session_id, 'mensaje': 'Sesión eliminada.'}
+
+
+# ---------------------------------------------------------------------------
+# Endpoint de feedback
+# ---------------------------------------------------------------------------
+# Deliberadamente independiente de /chat: solo toca prompts/prompts_*.json vía
+# actualizar_feedback(). No pasa por store/agregar_turno, así que el feedback
+# nunca entra al historial de sesión ni al contexto que se manda al LLM.
+
+@app.post('/feedback')
+def feedback(req: FeedbackRequest):
+    if req.feedback not in ('bueno', 'regular', 'malo'):
+        raise HTTPException(status_code=400, detail="feedback debe ser 'bueno', 'regular' o 'malo'")
+    actualizar_feedback(req.log_id, req.feedback, req.feedback_msg)
+    return {'ok': True, 'log_id': req.log_id}
 
 
 # ---------------------------------------------------------------------------

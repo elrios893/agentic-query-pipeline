@@ -90,6 +90,26 @@ class APIClient:
             logger.error(f"Error reseteando sesión en servidor: {e}")
             return False
 
+    def enviar_feedback(self, log_id: str, feedback: str, feedback_msg: str = '') -> bool:
+        """Registra feedback de una respuesta. No pasa por /chat: no toca
+        el historial de sesión ni el contexto que se manda al LLM."""
+        if not log_id:
+            return False
+        try:
+            response = self.session.post(
+                f"{self.server_url}/feedback",
+                json={
+                    "log_id": log_id,
+                    "feedback": feedback,
+                    "feedback_msg": feedback_msg,
+                },
+                timeout=10,
+            )
+            return response.status_code == 200
+        except Exception as e:
+            logger.error(f"Error enviando feedback: {e}")
+            return False
+
     def verificar_servidor(self) -> bool:
         """Verifica si el servidor está disponible"""
         try:

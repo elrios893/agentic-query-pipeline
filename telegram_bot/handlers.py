@@ -112,6 +112,30 @@ async def _enviar_imagenes(update, respuesta: str, imagenes_campo: list) -> None
         except Exception as e:
             logger.error(f"Error enviando imagen {ruta.name}: {e}")
 
+
+# ---------------------------------------------------------------------------
+# Feedback
+# ---------------------------------------------------------------------------
+# Flujo: botones -> callback de calificación -> (comentario opcional | Omitir).
+# El comentario se intercepta en procesar_mensaje ANTES de reenviar nada al
+# servidor, así que jamás pasa por /chat ni entra al historial de sesión que
+# se manda como contexto al LLM.
+
+async def _enviar_prompt_feedback(update, log_id: str) -> None:
+    """Ofrece calificar la última respuesta. No hace nada si no hay log_id
+    (por ejemplo, si el registro del prompt falló en el servidor)."""
+    if not log_id:
+        return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("👍 Bueno",   callback_data=f"fb:bueno:{log_id}"),
+        InlineKeyboardButton("😐 Regular", callback_data=f"fb:regular:{log_id}"),
+        InlineKeyboardButton("👎 Malo",    callback_data=f"fb:malo:{log_id}"),
+    ]])
+    await update.message.reply_text(
+        "¿Fue útil esta respuesta?",
+        reply_markup=keyboard,
+    )
+
 class TelegramHandlers:
     """Manejadores de eventos del bot"""
     
@@ -286,6 +310,10 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
         user = update.effective_user
         chat_id = update.effective_chat.id
 
+        # Un comando explícito significa que el usuario ya siguió adelante:
+        # cualquier feedback pendiente de comentario queda descartado.
+        context.user_data.pop('esperando_feedback', None)
+
         # El texto adicional que el usuario escribió después de /analisis
         prompt_extra = " ".join(context.args).strip() if context.args else ""
         pregunta = f"/analisis {prompt_extra}" if prompt_extra else "/analisis"
@@ -323,6 +351,7 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             imagenes  = resultado.get('imagenes', [])
             ruta_excel = resultado.get('ruta_excel', '')
             ruta_docx  = resultado.get('ruta_docx', '')
+            log_id     = resultado.get('log_id', '')
 
             for msg in MessageFormatter.dividir_mensaje_largo(md_a_telegram(respuesta)):
                 await _send_safe(update, msg)
@@ -351,6 +380,8 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
                     context.user_data['ultima_ruta_excel'] = ruta_excel
                     context.user_data['ultima_ruta_docx']  = ruta_docx
 
+            await _enviar_prompt_feedback(update, log_id)
+
             session_manager.incrementar_turno(user.id)
 
         except Exception as e:
@@ -367,7 +398,16 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
         user = update.effective_user
         chat_id = update.effective_chat.id
         texto = update.message.text.strip()
-        
+
+        # Si estamos esperando un comentario de feedback, este texto es ESO,
+        # no una consulta nueva: se guarda vía /feedback y se corta acá mismo,
+        # sin tocar api_client.enviar_consulta ni el historial de sesión.
+        pendiente = context.user_data.pop('esperando_feedback', None)
+        if pendiente:
+            api_client.enviar_feedback(pendiente['log_id'], pendiente['feedback'], texto)
+            await update.message.reply_text(f"{EMOJIS['success']} Gracias por tu comentario.")
+            return
+
         # Validar entrada
         if not texto or len(texto) < 3:
             await update.message.reply_text(
@@ -417,6 +457,7 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
             imagenes = resultado.get('imagenes', [])
             ruta_excel = resultado.get('ruta_excel', '')
             ruta_docx = resultado.get('ruta_docx', '')
+            log_id = resultado.get('log_id', '')
 
             if tipo == 'informe' and ruta_docx:
                 # Para informes: no enviar el contenido completo (es enorme),
@@ -445,6 +486,7 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
                 context.user_data['ultima_ruta_docx']  = ruta_docx
                 # Enviar imágenes del informe si las hay
                 await _enviar_imagenes(update, respuesta, imagenes)
+                await _enviar_prompt_feedback(update, log_id)
             else:
                 # Consulta normal: enviar el texto completo convertido
                 for msg in MessageFormatter.dividir_mensaje_largo(md_a_telegram(respuesta)):
@@ -474,7 +516,9 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
                         )
                         context.user_data['ultima_ruta_excel'] = ruta_excel
                         context.user_data['ultima_ruta_docx']  = ruta_docx
-            
+
+                await _enviar_prompt_feedback(update, log_id)
+
             # Incrementar turno
             session_manager.incrementar_turno(user.id)
             
@@ -486,6 +530,43 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
                 pass
             await _send_safe(update, f"{EMOJIS['error']} Error inesperado: {str(e)}")
     
+    @staticmethod
+    async def calificar_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Maneja el toque en 👍/😐/👎 bajo una respuesta.
+        callback_data: 'fb:<bueno|regular|malo>:<log_id>'
+        """
+        query = update.callback_query
+        await query.answer()
+
+        try:
+            _, feedback, log_id = query.data.split(':', 2)
+        except ValueError:
+            return
+
+        etiquetas = {'bueno': '👍 Bueno', 'regular': '😐 Regular', 'malo': '👎 Malo'}
+        context.user_data['esperando_feedback'] = {'log_id': log_id, 'feedback': feedback}
+
+        await query.edit_message_text(f"Calificación: {etiquetas.get(feedback, feedback)}")
+        await query.message.reply_text(
+            "¿Quieres agregar un comentario? Escríbelo en tu próximo mensaje, "
+            "o pulsa Omitir.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("Omitir", callback_data=f"fbskip:{log_id}"),
+            ]]),
+        )
+
+    @staticmethod
+    async def omitir_comentario_feedback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Maneja el botón 'Omitir' del comentario opcional de feedback."""
+        query = update.callback_query
+        await query.answer()
+
+        pendiente = context.user_data.pop('esperando_feedback', None)
+        if pendiente:
+            api_client.enviar_feedback(pendiente['log_id'], pendiente['feedback'], '')
+
+        await query.edit_message_text(f"{EMOJIS['success']} Gracias por tu feedback.")
+
     @staticmethod
     async def descargar_archivo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Maneja la descarga de archivos"""

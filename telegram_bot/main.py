@@ -68,6 +68,14 @@ def main():
         CallbackQueryHandler(TelegramHandlers.descargar_archivo, pattern="^download_")
     )
 
+    # Handlers para feedback (calificación + omitir comentario)
+    app.add_handler(
+        CallbackQueryHandler(TelegramHandlers.calificar_feedback, pattern="^fb:")
+    )
+    app.add_handler(
+        CallbackQueryHandler(TelegramHandlers.omitir_comentario_feedback, pattern="^fbskip:")
+    )
+
     # Registrar comandos visibles en el menú de Telegram
     async def post_init(application: Application) -> None:
         await application.bot.set_my_commands([
