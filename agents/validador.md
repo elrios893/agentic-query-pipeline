@@ -154,24 +154,20 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
   - Si el resultado esperado > 20 filas, el sistema agregará automáticamente `LIMIT 20` o indicará "(Mostrando top 20 de X)"
   - ✅ Aprobar sin rechazar si la lógica es correcta
 
-#### 14. LIMIT obligatorio en subqueries con "día/fecha de mayor venta"
-- Si la consulta tiene un subquery que busca "el día/fecha con más ventas" (contiene `COALESCE(..., 'Sin registros')` o `GROUP BY fecha/dia + ORDER BY SUM(...) DESC + LIMIT 1`):
-   - **CRÍTICO:** Verificar que la query principal tenga `LIMIT N` al final (donde N es un número)
-   - ❌ SIN LIMIT → **RECHAZAR** e indicar: *"Agregar `LIMIT 10` (o el número que especificó el usuario) para evitar procesar todas las filas"*
-   - ✅ CON LIMIT 10 → CORRECTO
-   - ✅ CON LIMIT 5 → CORRECTO (si el usuario pidió "top 5")
-   - Si el usuario no especifica un número, el default es `LIMIT 10`
-   - **Patrón a detectar:** Si ves `COALESCE(...SELECT...GROUP BY.*FECHA.*ORDER BY.*LIMIT 1`, verifica que la query exterior también tenga `LIMIT`
-   - **Feedback si falta:**
-     ```
-     ❌ RECHAZADA
-     
-     Errores encontrados:
-     1. Falta LIMIT en la query principal. Subqueries con "día de mayor venta" requieren LIMIT obligatorio.
-     
-     Feedback para el generador:
-     Agregar "LIMIT 10" (o "LIMIT N" si el usuario pidió específicamente top N) antes del punto y coma final.
-     ```
+#### 14. Correlated subqueries en el SELECT — PROHIBIDO SIEMPRE (usar CTE + ROW_NUMBER)
+- **Patrón a detectar:** una subquery dentro del SELECT (típicamente envuelta en `COALESCE(...)`, usada para traer "día de mayor venta", "línea más vendida", "referencia más vendida" u otro atributo top-1-por-grupo) cuyo `WHERE` compara un alias de la subquery contra un alias de la tabla externa del FROM principal — ej: `WHERE "v2"."DESC_DEPENDENCIA" = "v1"."DESC_DEPENDENCIA"`.
+- Si detectas ese patrón → **RECHAZAR SIEMPRE**, sin importar si la query principal tiene `LIMIT` o no. Este patrón reescanea y reagrupa toda la tabla base una vez POR CADA fila del resultado externo — es la causa más común de queries que tardan minutos o rompen el sistema, y el `LIMIT` de la query principal no lo evita (recorta el resultado final, no cuántas veces corre la subquery).
+- **Excepción:** subqueries que NO referencian ninguna columna de la tabla/alias externo son válidas (ej: `(SELECT MAX("Año") FROM ventas_unificada)`).
+- **Feedback si se rechaza:**
+  ```
+  ❌ RECHAZADA
+
+  Errores encontrados:
+  1. La consulta usa una subquery correlacionada (WHERE "vX"."col" = "vY"."col") para traer un atributo adicional por grupo. Esto reescanea la tabla base una vez por cada fila del resultado y puede tardar minutos.
+
+  Feedback para el generador:
+  Reescribe usando CTE base que filtra la tabla una sola vez + CTE(s) de ranking con ROW_NUMBER() OVER (PARTITION BY grupo ORDER BY metrica DESC) + LEFT JOIN con rn = 1 y COALESCE(..., 'Sin registros'). No uses subqueries correlacionadas en el SELECT.
+  ```
 
 #### 15. Columnas precalculadas "Año" y "Mes"
 - `"Año"` (BIGINT) y `"Mes"` (BIGINT) son columnas **precalculadas** en la tabla para optimizar queries temporales.

@@ -2037,7 +2037,13 @@ explícitamente pida cambiarlos.
     # Redactar respuesta final
     # ------------------------------------------------------------------
     print(f'[{MODELO}] Redactando respuesta...')
-    prompt_red = json.dumps(resultado, ensure_ascii=False, indent=2)
+    # Se incluye el SQL realmente ejecutado (no la pregunta del usuario) para
+    # que el redactor pueda abrir la respuesta indicando objeto y período
+    # reales analizados — ver regla 2 de redactor_respuesta.md.
+    prompt_red = (
+        f'### Consulta SQL ejecutada\n```sql\n{sql_final}\n```\n\n'
+        f'### Resultado\n{json.dumps(resultado, ensure_ascii=False, indent=2)}'
+    )
 
     if analisis_profundo:
         prompt_red += f'\n\n### Análisis Profundo del Agente Analista\n'

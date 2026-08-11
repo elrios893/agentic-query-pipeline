@@ -177,40 +177,76 @@ ORDER BY 2, 1;
     - Si hay más de 20 resultados, el sistema agregará nota automática: "(Mostrando top 20 de X resultados)"
     - Para rankings: incluir columna de posición numérica (1, 2, 3...) y % del total
 
-18. **Subqueries para buscar "día/fecha de mayor venta" + LIMIT obligatorio**: Cuando busques la fecha/día con más ventas de un item/referencia/categoría, SIEMPRE:
-     - Usa subquery con `GROUP BY fecha` + `ORDER BY SUM(cantidad) DESC` + `LIMIT 1`
-     - Envuelve el subquery con `COALESCE(..., 'Sin registros')` para evitar NULLs
-     - En la query principal, filtra con `HAVING SUM(valor) IS NOT NULL` para eliminar referencias sin ventas
-     - **CRÍTICO: Agrega `LIMIT N` al final de la query principal** (default: 10 si el usuario no especifica):
-       - Si el usuario pide "top 5", usar `LIMIT 5`
-       - Si pide "top 20", usar `LIMIT 20`
-       - Si no especifica, usar `LIMIT 10` (por defecto)
-     - **NUNCA generes queries sin LIMIT en subqueries con funciones de ventana** (ROW_NUMBER, RANK, etc.)
-     
-     **Ejemplo correcto (sin especificar N → LIMIT 10 por defecto):**
-     ```sql
-     SELECT
-       ROW_NUMBER() OVER (ORDER BY SUM("CANTIDAD" * "PVP") DESC) AS "Posición",
-       UPPER(TRIM("REFERENCIA")) AS "Referencia",
-       SUM("CANTIDAD") AS "Unidades_Vendidas",
-       ROUND(CAST(SUM("CANTIDAD" * "PVP") AS numeric), 2) AS "Valor_Ventas",
-       COALESCE(
-         (SELECT TO_CHAR(TO_DATE("v2"."FECHA_MVTO", 'FMDD/FMMM/YYYY'), 'DD/MM/YYYY')
-           FROM "ventas_2026" "v2"
-           WHERE "v2"."REFERENCIA" = "v1"."REFERENCIA" 
-             AND TRIM("v2"."DESC_MOVIMIENTO") = 'VENTAS POS'
-          GROUP BY "v2"."FECHA_MVTO"
-          ORDER BY SUM("v2"."CANTIDAD") DESC
-          LIMIT 1),
-         'Sin registros'
-       ) AS "Dia_Mayor_Venta"
-     FROM "ventas_2026" "v1"
-     WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
-     GROUP BY "v1"."REFERENCIA"
-     HAVING SUM("CANTIDAD" * "PVP") IS NOT NULL
-     ORDER BY "Valor_Ventas" DESC
-     LIMIT 10;  -- ← Default si el usuario no especifica
-     ```
+18. **Atributo adicional por grupo (día de mayor venta, línea más vendida, referencia más vendida, etc.) — NUNCA correlated subquery, SIEMPRE CTE + `ROW_NUMBER()`**:
+
+    Cuando la pregunta pida agregar a un resultado agrupado (por tienda, por referencia, por línea...) un dato extra que es "el top 1 de otra dimensión" — ej: "día de mayor venta", "línea más vendida", "producto más vendido" — **NUNCA** uses una subquery correlacionada en el SELECT (`WHERE "v2"."col" = "v1"."col"`). Ese patrón vuelve a escanear y agrupar toda la tabla base **una vez por cada fila** del resultado externo (una vez por tienda, una vez por referencia...) y puede tardar minutos o tumbar el servidor con tablas grandes, incluso con `LIMIT` en la query principal (el `LIMIT` recorta el resultado final, no reduce cuántas veces se ejecuta la subquery).
+
+    ❌ **INCORRECTO — NUNCA generes esto (subquery correlacionada):**
+    ```sql
+    SELECT
+      "v1"."DESC_DEPENDENCIA",
+      SUM("v1"."CANTIDAD") AS "Total_Unidades",
+      COALESCE(
+        (SELECT TO_CHAR(TO_DATE("v2"."FECHA_MVTO", 'FMDD/FMMM/YYYY'), 'DD/MM/YYYY')
+         FROM ventas_unificada "v2"
+         WHERE "v2"."DESC_DEPENDENCIA" = "v1"."DESC_DEPENDENCIA"  -- ← referencia la tabla externa: esto es lo prohibido
+           AND TRIM("v2"."DESC_MOVIMIENTO") = 'VENTAS POS'
+         GROUP BY "v2"."FECHA_MVTO"
+         ORDER BY SUM("v2"."CANTIDAD" * "v2"."PVP") DESC
+         LIMIT 1),
+        'Sin registros'
+      ) AS "Dia_Mayor_Venta"
+    FROM ventas_unificada "v1"
+    WHERE TRIM("v1"."DESC_MOVIMIENTO") = 'VENTAS POS'
+    GROUP BY "v1"."DESC_DEPENDENCIA";
+    ```
+
+    ✅ **CORRECTO — patrón obligatorio: CTE base filtrada una sola vez + CTE(s) de ranking con `ROW_NUMBER() OVER (PARTITION BY grupo ORDER BY metrica DESC)` + `LEFT JOIN` con `rn = 1`:**
+    ```sql
+    WITH ventas_base AS (
+      -- 1. Filtra la tabla UNA sola vez para todo el análisis
+      SELECT "DESC_DEPENDENCIA", "CANTIDAD", "PVP", "FECHA_MVTO", "LINEA",
+             ("CANTIDAD" * "PVP") AS "Venta_Total"
+      FROM ventas_unificada
+      WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+        AND "Año" = 2026
+    ),
+    totales AS (
+      -- 2. Agregación principal
+      SELECT "DESC_DEPENDENCIA",
+             SUM("CANTIDAD") AS "Total_Unidades",
+             ROUND(CAST(SUM("Venta_Total") AS numeric), 2) AS "Total_Ventas"
+      FROM ventas_base
+      GROUP BY "DESC_DEPENDENCIA"
+    ),
+    ranking_dias AS (
+      -- 3. Día de mayor venta por grupo, vía ROW_NUMBER (no subquery correlacionada)
+      SELECT "DESC_DEPENDENCIA",
+             TO_CHAR(TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY'), 'DD/MM/YYYY') AS "Dia_Mayor_Venta",
+             ROW_NUMBER() OVER (
+               PARTITION BY "DESC_DEPENDENCIA" ORDER BY SUM("Venta_Total") DESC
+             ) AS rn
+      FROM ventas_base
+      GROUP BY "DESC_DEPENDENCIA", "FECHA_MVTO"
+    )
+    -- 4. Union final: cada CTE de ranking se une con LEFT JOIN + rn = 1
+    SELECT
+      t."DESC_DEPENDENCIA",
+      t."Total_Unidades",
+      t."Total_Ventas",
+      COALESCE(d."Dia_Mayor_Venta", 'Sin registros') AS "Dia_Mayor_Venta"
+    FROM totales t
+    LEFT JOIN ranking_dias d
+      ON t."DESC_DEPENDENCIA" = d."DESC_DEPENDENCIA" AND d.rn = 1
+    ORDER BY t."Total_Ventas" DESC
+    LIMIT 1000;
+    ```
+
+    Reglas del patrón:
+    - Filtra la tabla base **una sola vez** en el primer CTE. Todos los CTEs siguientes parten de ahí, nunca de la tabla original otra vez.
+    - Por cada atributo "top 1 por grupo" adicional (día, línea, referencia...), crea un CTE de ranking separado con su propio `ROW_NUMBER() OVER (PARTITION BY grupo ORDER BY metrica DESC)`.
+    - Une cada ranking con `LEFT JOIN ... ON grupo = grupo AND rn = 1`, y envuelve el resultado en `COALESCE(..., 'Sin registros')`.
+    - El `LIMIT` de la query principal sigue las reglas generales de la regla 2 (arriba).
 
 19. **REFERENCIA siempre acompañada de GRUPO_NORM**: Cuando generes una consulta SQL que incluya la columna `"REFERENCIA"` en el SELECT, DEBES incluir también `TRIM("GRUPO_NORM") AS "GRUPO"` (si usas `ventas_unificada`) o `UPPER(TRIM("GRUPO")) AS "GRUPO"` (si usas las tablas origen). Esto es obligatorio para que el usuario pueda contextualizar cada referencia con su grupo de producto. Ejemplo con `ventas_unificada`:
      ```sql

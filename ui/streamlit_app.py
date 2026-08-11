@@ -240,13 +240,15 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool, str]:
         # Extraer y guardar gráficos
         imagenes = []
         for ruta_img in imagenes_raw:
-            ruta_img_norm = ruta_img.replace('\\', '/').replace('![]', '').strip('()')
             # Limpiar markdown si viene con formato ![...](ruta)
             match_ruta = re.search(r'\(([^)]+)\)', ruta_img)
-            if match_ruta:
-                ruta_img_norm = match_ruta.group(1)
+            ruta_cruda = match_ruta.group(1) if match_ruta else ruta_img
+            # Normalizar SIEMPRE al final (el regex de arriba puede reintroducir
+            # backslashes): si no, el mismo archivo puede quedar dos veces en
+            # `imagenes` con separadores distintos y el dedup de abajo no lo detecta.
+            ruta_img_norm = ruta_cruda.replace('\\', '/')
             g = BASE_DIR / ruta_img_norm
-            if g.exists():
+            if g.exists() and ruta_img_norm not in imagenes:
                 titulo = g.stem.replace('chart_', '', 1)
                 guardar_item('grafico', titulo, ruta_img_norm, pregunta)
                 imagenes.append(ruta_img_norm)
@@ -262,6 +264,14 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool, str]:
                 guardar_item('grafico', titulo, ruta_norm, pregunta)
                 imagenes.append(ruta_norm)
                 hay_nuevos = True
+
+        # Quitar el markdown de imagen del texto: las imágenes ya quedaron
+        # en `imagenes` y se renderizan aparte con st.image() en
+        # _mostrar_mensaje_asistente(). Streamlit resuelve rutas locales en
+        # st.markdown(), así que si no se limpia, cada gráfico se ve dos
+        # veces (una desde el texto, otra desde el loop de imagenes).
+        if imagenes_inline:
+            respuesta_txt = re.sub(r'!\[.*?\]\([^)]+\)', '', respuesta_txt).strip()
 
         # El registro del prompt (incluyendo SQL usada) ya lo hizo el servidor
         # de forma centralizada — aquí solo recuperamos el id para el feedback.
