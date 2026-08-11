@@ -18,6 +18,7 @@ Comportamiento incremental:
 """
 import sys
 import os
+import re
 import time
 import shutil
 import pandas as pd
@@ -148,19 +149,31 @@ def resolver_ruta_local(ano: str) -> Path:
     return Path(base_local) / ano / f'BSPlanaVentas{ano}.txt'
 
 
-def sincronizar_desde_red(destino: Path, max_intentos: int = 3, espera_seg: int = 5) -> bool:
+def sincronizar_desde_red(ano: str, destino: Path, max_intentos: int = 3, espera_seg: int = 5) -> bool:
     """
     Si DATA_FILE_PATH esta seteada (ruta COMPLETA al archivo de red), lo
     copia hacia `destino` con reintentos (por si el job que lo genera a
     diario lo tiene abierto justo en ese momento). Devuelve True si
-    sincronizo desde red, False si DATA_FILE_PATH no esta definida (se usa
-    el archivo local tal cual esta, sin tocar la red).
+    sincronizo desde red, False si DATA_FILE_PATH no esta definida o no
+    corresponde al año que se esta ingestando (se usa el archivo local tal
+    cual esta, sin tocar la red).
+
+    DATA_FILE_PATH apunta a un archivo fijo de UN año (ej: BSPlanaVentas2026.txt).
+    Si se esta ingestando otro año (--2025) y no se valida esto, se terminaria
+    copiando el archivo de 2026 hacia el destino local de 2025, mezclando datos.
     """
     ruta_red_str = os.getenv('DATA_FILE_PATH')
     if not ruta_red_str:
         return False
 
     ruta_red = Path(ruta_red_str)
+
+    match_ano = re.search(r'(\d{4})', ruta_red.stem)
+    if match_ano and match_ano.group(1) != ano:
+        print(f'  DATA_FILE_PATH ({ruta_red.name}) es del año {match_ano.group(1)}, '
+              f'no aplica para --{ano}. Usando archivo local.')
+        return False
+
     destino.parent.mkdir(parents=True, exist_ok=True)
 
     for intento in range(1, max_intentos + 1):
@@ -265,7 +278,7 @@ def main():
     # de leer — con reintentos si el archivo esta bloqueado momentaneamente
     t0 = datetime.now()
     try:
-        leido_de_red = sincronizar_desde_red(ruta_archivo)
+        leido_de_red = sincronizar_desde_red(ano, ruta_archivo)
     except FileNotFoundError:
         print(f'ERROR: Archivo de red no encontrado: {os.getenv("DATA_FILE_PATH")}')
         sys.exit(1)
