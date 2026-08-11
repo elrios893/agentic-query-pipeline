@@ -64,7 +64,11 @@ def refrescar(dry_run: bool = False) -> bool:
     Returns:
         True si éxito, False si error.
     """
-    sql_refresh = f'REFRESH MATERIALIZED VIEW {VISTA};'
+    # CONCURRENTLY evita el lock exclusivo que bloquea lecturas mientras
+    # refresca -- necesario porque este refresco corre varias veces por
+    # manana via tarea programada y puede caer en horario de uso activo.
+    # Requiere el indice unico idx_vu_row_hash (ver setup_ventas_unificada.sql).
+    sql_refresh = f'REFRESH MATERIALIZED VIEW CONCURRENTLY {VISTA};'
     sql_count   = f'SELECT COUNT(*) FROM {VISTA};'
     sql_cobertura = f"""
         SELECT

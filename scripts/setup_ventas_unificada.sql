@@ -75,6 +75,13 @@ CREATE INDEX IF NOT EXISTS idx_vu_referencia
 CREATE INDEX IF NOT EXISTS idx_vu_mov_anio
     ON ventas_unificada (TRIM("DESC_MOVIMIENTO"), "Año");
 
+-- row_hash es unico en toda la vista (heredado de ventas_2025/ventas_2026).
+-- Requerido para poder usar REFRESH MATERIALIZED VIEW CONCURRENTLY, que no
+-- bloquea lecturas mientras refresca (importante para refrescos automaticos
+-- que puedan caer en horario de uso activo).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vu_row_hash
+    ON ventas_unificada (row_hash);
+
 -- ---------------------------------------------------------------------------
 -- VERIFICACIÓN FINAL
 -- ---------------------------------------------------------------------------
