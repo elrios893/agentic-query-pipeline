@@ -18,6 +18,8 @@ Comportamiento incremental:
 """
 import sys
 import os
+import time
+import shutil
 import pandas as pd
 import psycopg2
 from psycopg2 import sql
@@ -134,6 +136,100 @@ def ensure_hash_column(cur, conn, tabla_destino, columns, col_hash='row_hash'):
     conn.commit()
     print('  Constraint UNIQUE creada.')
 
+def resolver_ruta_local(ano: str) -> Path:
+    """
+    Ruta local de trabajo: {DATA_FILE_PATH_LOCAL o 'data_samples'}/{ano}/BSPlanaVentas{ano}.txt
+
+    La lectura/parseo del CSV SIEMPRE ocurre sobre esta ruta local, nunca
+    directo sobre la red — evita depender de la estabilidad/permisos de la
+    red durante el parseo (que es la parte mas pesada, con engine='python').
+    """
+    base_local = os.getenv('DATA_FILE_PATH_LOCAL') or 'data_samples'
+    return Path(base_local) / ano / f'BSPlanaVentas{ano}.txt'
+
+
+def sincronizar_desde_red(destino: Path, max_intentos: int = 3, espera_seg: int = 5) -> bool:
+    """
+    Si DATA_FILE_PATH esta seteada (ruta COMPLETA al archivo de red), lo
+    copia hacia `destino` con reintentos (por si el job que lo genera a
+    diario lo tiene abierto justo en ese momento). Devuelve True si
+    sincronizo desde red, False si DATA_FILE_PATH no esta definida (se usa
+    el archivo local tal cual esta, sin tocar la red).
+    """
+    ruta_red_str = os.getenv('DATA_FILE_PATH')
+    if not ruta_red_str:
+        return False
+
+    ruta_red = Path(ruta_red_str)
+    destino.parent.mkdir(parents=True, exist_ok=True)
+
+    for intento in range(1, max_intentos + 1):
+        try:
+            shutil.copy2(str(ruta_red), str(destino))
+            print(f'  Sincronizado desde red: {ruta_red} -> {destino}')
+            return True
+        except FileNotFoundError:
+            # Ruta de red mal escrita / no accesible: no tiene sentido reintentar.
+            raise
+        except OSError as e:
+            if intento == max_intentos:
+                raise RuntimeError(
+                    f'No se pudo copiar {ruta_red} tras {max_intentos} intentos: {e}\n'
+                    f'Si es una ruta de red, verifica que sea UNC (\\\\servidor\\carpeta\\archivo.txt) '
+                    f'en vez de una unidad mapeada (M:\\...), y que la terminal no este '
+                    f'corriendo como Administrador (las unidades mapeadas no son visibles '
+                    f'para procesos elevados).'
+                ) from e
+            print(f'  Intento {intento}/{max_intentos} fallo ({e}). Reintentando en {espera_seg}s...')
+            time.sleep(espera_seg)
+
+
+def leer_archivo_con_reintentos(ruta_archivo: Path, max_intentos: int = 3, espera_seg: int = 5) -> pd.DataFrame:
+    """
+    Lee el TXT fuente con deteccion de encoding por BOM, reintentando si el
+    archivo esta bloqueado momentaneamente (ej: el job que lo genera a
+    diario lo tiene abierto justo cuando corre la ingesta).
+
+    Solo reintenta PermissionError/OSError (bloqueo/acceso). Un
+    FileNotFoundError por ruta mal escrita no se reintenta, falla directo.
+    """
+    for intento in range(1, max_intentos + 1):
+        try:
+            with open(str(ruta_archivo), 'rb') as f:
+                bom = f.read(2)
+            if bom == b'\xff\xfe':
+                encoding_real = 'utf-16-le'
+                print(f'  Encoding detectado: UTF-16 LE (BOM encontrado)')
+            elif bom == b'\xfe\xff':
+                encoding_real = 'utf-16-be'
+                print(f'  Encoding detectado: UTF-16 BE (BOM encontrado)')
+            else:
+                encoding_real = ENCODING
+                print(f'  Encoding detectado: {ENCODING} (sin BOM)')
+
+            return pd.read_csv(
+                str(ruta_archivo),
+                sep=SEPARADOR,
+                encoding=encoding_real,
+                on_bad_lines='skip',
+                engine='python',
+            )
+        except FileNotFoundError:
+            # Ruta mal escrita / carpeta inexistente: no tiene sentido reintentar.
+            raise
+        except OSError as e:
+            if intento == max_intentos:
+                raise RuntimeError(
+                    f'No se pudo leer {ruta_archivo} tras {max_intentos} intentos: {e}\n'
+                    f'Si es una ruta de red, verifica que sea UNC (\\\\servidor\\carpeta) '
+                    f'en vez de una unidad mapeada (M:\\...), y que la terminal no este '
+                    f'corriendo como Administrador (las unidades mapeadas no son visibles '
+                    f'para procesos elevados).'
+                ) from e
+            print(f'  Intento {intento}/{max_intentos} fallo ({e}). Reintentando en {espera_seg}s...')
+            time.sleep(espera_seg)
+
+
 def main():
     # ------------------------------------------------------------------
     # Procesar argumentos: determinar año y modo
@@ -157,43 +253,41 @@ def main():
         print(f'ERROR: Año no válido: {ano}. Usa --2025 o --2026')
         sys.exit(1)
     
-    # Construir ruta del archivo
-    ruta_archivo = Path(f'data_samples/{ano}/BSPlanaVentas{ano}.txt')
-    if not ruta_archivo.exists():
-        print(f'ERROR: Archivo no encontrado: {ruta_archivo}')
-        print(f'Verifica que existe la carpeta data_samples/{ano}/ y el archivo BSPlanaVentas{ano}.txt')
-        sys.exit(1)
-    
+    # Ruta local de trabajo (siempre se lee/parsea de aca, nunca directo de red)
+    ruta_archivo = resolver_ruta_local(ano)
+
     # Nombre de tabla destino
     tabla_destino = f'ventas_{ano}'
     chunksize = 5000
     col_hash = 'row_hash'
-    
-    # Leer datos con manejo de líneas malformadas y detección de encoding
+
+    # Si DATA_FILE_PATH esta seteada, sincronizar (copiar) desde la red antes
+    # de leer — con reintentos si el archivo esta bloqueado momentaneamente
     t0 = datetime.now()
+    try:
+        leido_de_red = sincronizar_desde_red(ruta_archivo)
+    except FileNotFoundError:
+        print(f'ERROR: Archivo de red no encontrado: {os.getenv("DATA_FILE_PATH")}')
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f'ERROR: {e}')
+        sys.exit(1)
+
+    origen = 'DATA_FILE_PATH (sincronizado desde red)' if leido_de_red else 'DATA_FILE_PATH_LOCAL (o default)'
+    print(f'  Origen del archivo: {origen}')
     print(f'[{t0:%H:%M:%S}] Leyendo {ruta_archivo}...')
-    
-    # Detectar encoding por BOM
-    with open(str(ruta_archivo), 'rb') as f:
-        bom = f.read(2)
-    if bom == b'\xff\xfe':
-        encoding_real = 'utf-16-le'
-        print(f'  Encoding detectado: UTF-16 LE (BOM encontrado)')
-    elif bom == b'\xfe\xff':
-        encoding_real = 'utf-16-be'
-        print(f'  Encoding detectado: UTF-16 BE (BOM encontrado)')
-    else:
-        encoding_real = ENCODING
-        print(f'  Encoding detectado: {ENCODING} (sin BOM)')
-    
-    df = pd.read_csv(
-        str(ruta_archivo),
-        sep=SEPARADOR,
-        encoding=encoding_real,
-        on_bad_lines='skip',
-        engine='python'   # python engine: más tolerante; no soporta low_memory
-    )
-    
+
+    try:
+        df = leer_archivo_con_reintentos(ruta_archivo)
+    except FileNotFoundError:
+        print(f'ERROR: Archivo no encontrado: {ruta_archivo}')
+        print('Verifica DATA_FILE_PATH / DATA_FILE_PATH_LOCAL en .env, o que exista '
+              f'la carpeta data_samples/{ano}/ y el archivo BSPlanaVentas{ano}.txt')
+        sys.exit(1)
+    except RuntimeError as e:
+        print(f'ERROR: {e}')
+        sys.exit(1)
+
     # Limpiar BOM residual del nombre de la primera columna (puede ocurrir con UTF-16)
     df.columns = [c.lstrip('\ufeff').lstrip('\xff\xfe') for c in df.columns]
     

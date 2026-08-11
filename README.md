@@ -221,8 +221,12 @@ DB_NAME = your_db_name
 DB_USER = postgres
 DB_PASSWORD = tu_password
 
-# Ruta al archivo TXT fuente (puede ser ruta de red UNC)
-DATA_FILE_PATH = ...\your_txt_file.txt
+# Archivo fuente de ventas (opcional, ver sección "Ingesta de datos")
+# DATA_FILE_PATH: ruta COMPLETA al archivo de red. Si está definida, se copia
+#   a DATA_FILE_PATH_LOCAL antes de leer (nunca se parsea directo de red).
+# DATA_FILE_PATH_LOCAL: carpeta local (directorio), default 'data_samples' si no se define.
+DATA_FILE_PATH = \\servidor\carpeta\BSPlanaVentas2026.txt
+DATA_FILE_PATH_LOCAL = data_samples
 
 # Telegram (solo si se va a correr el bot)
 TELEGRA_BOT_TOKEN = tu_token_de_botfather
@@ -301,16 +305,22 @@ La UI tiene dos áreas principales:
 
 ## Ingesta de datos
 
-El script `ingesta_postgres.py` soporta dos modos:
+El script `ingesta_postgres.py` soporta dos modos (requiere `--2025` o `--2026` para indicar el año):
 
 | Modo | Comando | Comportamiento |
 |------|---------|----------------|
-| Incremental | `python src/ingesta_postgres.py` | Solo inserta filas nuevas (dedup MD5) |
-| Full sync | `python src/ingesta_postgres.py --full-sync` | Recrea la tabla desde cero |
+| Incremental | `python src/ingesta_postgres.py --2026` | Solo inserta filas nuevas (dedup MD5) |
+| Full sync | `python src/ingesta_postgres.py --2026 --full-sync` | Recrea la tabla desde cero |
 
 La deduplicación calcula `md5(col1 \|\| '\|' \|\| col2 \|\| ...)` en PostgreSQL server-side. Una segunda ejecución con el mismo archivo inserta 0 filas.
 
-El archivo fuente se configura con la variable `DATA_FILE_PATH` en `.env`, que acepta rutas locales o rutas UNC de red (`\\servidor\carpeta\archivo.txt`).
+### Archivo fuente: sincronización desde red + lectura local
+
+La ingesta **nunca parsea el CSV directo desde la red** — primero sincroniza (copia) el archivo a una carpeta local, y solo entonces lo lee. Esto evita depender de la estabilidad de la red durante el parseo (la parte más pesada, con `engine='python'`), y reduce el archivo de red a una sola operación de copia.
+
+- **`DATA_FILE_PATH`** (`.env`, opcional) — ruta **completa** al archivo de red, incluyendo el nombre del `.txt` (ej: `\\servidor\carpeta\BSPlanaVentas2026.txt`). Si está definida, la ingesta copia ese archivo hacia `DATA_FILE_PATH_LOCAL` (con reintentos si está bloqueado momentáneamente) antes de leer.
+  - **Requiere correr el script desde una terminal SIN "Ejecutar como administrador".** Una terminal elevada no ve las unidades de red mapeadas (`M:\...`) aunque la misma cuenta sí las vea en su sesión normal — eso produce "Archivo no encontrado" o "Access Denied" al copiar. Si de todos modos se necesita correr elevado, usar **ruta UNC** (`\\servidor\carpeta\archivo.txt`) en vez de la unidad mapeada.
+- **`DATA_FILE_PATH_LOCAL`** (`.env`, opcional) — **directorio** local base, con la convención de subcarpeta por año (`{DATA_FILE_PATH_LOCAL}/{año}/BSPlanaVentas{año}.txt`, el nombre del archivo se arma solo). Si `DATA_FILE_PATH` no está definida, la ingesta lee directo de acá (comportamiento histórico, sin tocar la red). Si no se define ninguna de las dos, usa `data_samples/`.
 
 ---
 
