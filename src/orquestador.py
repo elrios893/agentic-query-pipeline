@@ -145,8 +145,21 @@ PATRONES_EXCEL = re.compile(
     re.IGNORECASE
 )
 
+PATRONES_BUSQUEDA_WEB = re.compile(
+    r'(tendencias?\s+(de\s+|del\s+)?mercado|mercado\s+actual|'
+    r'qu[eé]\s+(dice|hay en)\s+(el\s+)?internet|busca\w*\s+en\s+internet|'
+    r'investiga\w*\s+en\s+internet|competencia|competidor\w*|'
+    r'noticias?\s+(de|sobre)|est[aá]\s+de\s+moda|en\s+tendencia|'
+    r'seg[uú]n\s+internet|b[uú]scalo\s+en\s+(google|internet|la\s+web)|'
+    r'busca\w*\s+en\s+(google|la\s+web))',
+    re.IGNORECASE
+)
+
 def es_intencion_informe(texto: str) -> bool:
     return bool(PATRONES_INFORME.search(texto))
+
+def es_intencion_busqueda_web(texto: str) -> bool:
+    return bool(PATRONES_BUSQUEDA_WEB.search(texto))
 
 def es_intencion_grafico(texto: str) -> bool:
     return bool(PATRONES_GRAFICO.search(texto))

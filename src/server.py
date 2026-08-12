@@ -47,12 +47,14 @@ from src.orquestador import (
     procesar_consulta,
     generar_informe,
     es_intencion_informe,
+    es_intencion_busqueda_web,
     llamar_llm,
     leer_instrucciones,
     _reglas_gen,
 )
 from src.prompt_logger import registrar_prompt, actualizar_feedback
 from tools.tool_pandas import ejecutar_operacion, catalogo_para_llm
+from tools.buscar_web import buscar_web
 
 # ---------------------------------------------------------------------------
 # App FastAPI
@@ -514,13 +516,98 @@ def _manejar_conversacional(pregunta: str, contexto: dict) -> str:
     historial_str = json.dumps(contexto.get('historial', []), ensure_ascii=False)
     dfs_str       = json.dumps(contexto.get('dataframes_activos', []), ensure_ascii=False)
 
+    bloque_web = ''
+    necesita_web = es_intencion_busqueda_web(pregunta)
+    print(f'[CONVERSACIONAL] busqueda_web={"SI" if necesita_web else "NO"} — pregunta: "{pregunta}"')
+    if necesita_web:
+        query_web = _generar_query_busqueda_web(pregunta, contexto)
+        print(f'[CONVERSACIONAL] query_web generada: "{query_web}"')
+        resultados_web = buscar_web(query_web)
+        print(f'[CONVERSACIONAL] resultados_web: {len(resultados_web)} resultado(s)')
+        for i, r in enumerate(resultados_web):
+            print(f'  [{i}] {r.get("titulo", "")[:80]} — {r.get("url", "")}')
+            print(f'      contenido[:200]: {r.get("contenido", "")[:200]!r}')
+        if resultados_web:
+            bloque_web = (
+                f'\n\nResultados de búsqueda web (fuentes externas, query: "{query_web}"):\n'
+                f'{json.dumps(resultados_web, ensure_ascii=False)}\n'
+            )
+        else:
+            bloque_web = (
+                f'\n\nBúsqueda web (query: "{query_web}"): no se encontraron resultados.\n'
+            )
+
     prompt = (
         f'El usuario dice: "{pregunta}"\n\n'
         f'Contexto de la sesión (últimos turnos):\n{historial_str}\n\n'
-        f'Datos disponibles en memoria:\n{dfs_str}\n\n'
+        f'Datos disponibles en memoria:\n{dfs_str}\n'
+        f'{bloque_web}\n'
         f'Responde siguiendo las reglas del modo conversacional.'
     )
     return llamar_llm(system_red, prompt, temperatura=0.4)
+
+
+def _generar_query_busqueda_web(pregunta: str, contexto: dict) -> str:
+    """
+    Convierte la pregunta conversacional en una query de búsqueda web específica,
+    usando el LLM para incorporar términos concretos del contexto de la sesión
+    (categorías/referencias/líneas mencionadas, cifras top, período) — en vez de
+    pasar la pregunta del usuario tal cual a Tavily, que suele ser genérica
+    ("¿esto es congruente con las tendencias de LatAm?") y no menciona lo que
+    se está discutiendo (ej: qué categorías, qué período).
+    """
+    historial = contexto.get('historial', [])[-3:]
+    dfs = contexto.get('dataframes_activos', [])
+
+    lineas_contexto = []
+    for t in historial:
+        lineas_contexto.append(f'- Usuario preguntó: "{t.get("pregunta", "")}" → Resultado: {t.get("resumen", "")}')
+    for df in dfs:
+        metricas = df.get('metricas', {})
+        metricas_str = ', '.join(f'{k}={v}' for k, v in metricas.items()) if metricas else ''
+        lineas_contexto.append(
+            f'- Datos en memoria ({df.get("nombre", "")}): {df.get("descripcion", "")}'
+            + (f' | métricas: {metricas_str}' if metricas_str else '')
+        )
+    contexto_str = '\n'.join(lineas_contexto) if lineas_contexto else '(sin contexto previo en la sesión)'
+
+    print(f'[CONVERSACIONAL] contexto para query_web:\n{contexto_str}')
+
+    system = (
+        'Conviertes la pregunta de un usuario en UNA sola query de búsqueda web, concreta y específica. '
+        'Usa el contexto interno entregado (categorías, líneas de producto, referencias, cifras, período, país/región) '
+        'para reemplazar referencias vagas como "esto", "las tendencias internas" o "eso" por los términos reales. '
+        'NUNCA incluyas cifras de ventas internas ni nombres de la empresa en la query — la query es para buscar '
+        'información pública externa (tendencias de mercado, sector, competencia), no datos propios. '
+        'Responde SOLO con la query de búsqueda en texto plano, sin comillas ni explicación, máximo 20 palabras.'
+    )
+    prompt = (
+        f'Pregunta del usuario: "{pregunta}"\n\n'
+        f'Contexto interno de la sesión (úsalo solo para identificar QUÉ términos concretos buscar, '
+        f'no los incluyas como datos en la query):\n{contexto_str}\n\n'
+        f'Genera la query de búsqueda web.'
+    )
+
+    try:
+        query = llamar_llm(system, prompt, temperatura=0.2).strip().strip('"').strip("'")
+        if query:
+            return query
+    except Exception as e:
+        print(f'[CONVERSACIONAL] Error generando query_web con LLM: {e!r} — usando fallback simple')
+
+    return _construir_query_busqueda_web_fallback(pregunta, contexto)
+
+
+def _construir_query_busqueda_web_fallback(pregunta: str, contexto: dict) -> str:
+    """Fallback sin LLM: concatena la pregunta con el turno y df más recientes."""
+    partes = [pregunta]
+    historial = contexto.get('historial', [])
+    if historial:
+        partes.append(historial[-1].get('resumen', '') or historial[-1].get('pregunta', ''))
+    dfs = contexto.get('dataframes_activos', [])
+    if dfs:
+        partes.append(dfs[-1].get('descripcion', ''))
+    return ' '.join(p for p in partes if p).strip()
 
 
 def _resumir_respuesta(respuesta: str, max_chars: int = 120) -> str:
