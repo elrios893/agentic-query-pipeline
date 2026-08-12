@@ -1,8 +1,11 @@
 # Registra la tarea programada que corre scripts\actualizar_ventas.ps1
 # a las 6:00, 7:00, 8:00 y 9:00am todos los dias.
-# Ejecutar UNA VEZ en el Windows Server, como Administrador.
+# Ejecutar como Administrador, desde la copia local del repo en CADA equipo
+# donde deba correr la tarea (usa la ruta del propio script, no una fija).
+# Si el repo cambio de ubicacion o la tarea ya estaba registrada con una
+# ruta vieja, hay que volver a correr este script (-Force la sobreescribe).
 
-$repo   = 'C:\agentic-query-pipeline'
+$repo   = Split-Path -Parent $PSScriptRoot
 $script = Join-Path $repo 'scripts\actualizar_ventas.ps1'
 $nombreTarea = 'ActualizarVentas2026_Agente_BI'
 
