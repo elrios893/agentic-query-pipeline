@@ -1,6 +1,6 @@
 # Consultor Inteligente de Ventas
 
-Sistema de análisis de datos de ventas en lenguaje natural. Traduce preguntas en español a SQL, ejecuta consultas sobre PostgreSQL, genera gráficos y produce informes profesionales en Word (.docx). Un servidor FastAPI central concentra toda la lógica y mantiene el estado de sesión; Streamlit (interfaz web) y un bot de Telegram son dos clientes intercambiables que hablan con ese servidor por HTTP.
+Sistema de análisis de datos de ventas en lenguaje natural. Traduce preguntas en español a SQL, ejecuta consultas sobre PostgreSQL, genera gráficos, produce informes profesionales en Word (.docx) y tablas en excel. Un servidor FastAPI central concentra toda la lógica y mantiene el estado de sesión; Streamlit (interfaz web) y un bot de Telegram son dos clientes intercambiables que hablan con ese servidor por HTTP.
 
 ---
 
@@ -439,7 +439,6 @@ Un archivo por día. Los archivos JSON están en `.gitignore` — son datos de u
 - **Solo lectura** — `consultar_db.py` rechaza cualquier sentencia que no sea SELECT a nivel de keyword antes de llegar a la DB
 - **Tamaño dinámico de gráficos** — la figura se calcula en función del número de ítems, no es un tamaño fijo
 - **Retry con backoff exponencial** — `llamar_llm()` reintenta 3 veces (10s / 20s / 40s) ante rate limits o timeouts del proveedor LLM
-
 ---
 
 ## Requisitos
