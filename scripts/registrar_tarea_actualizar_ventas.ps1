@@ -4,7 +4,7 @@
 
 $repo   = 'C:\agentic-query-pipeline'
 $script = Join-Path $repo 'scripts\actualizar_ventas.ps1'
-$nombreTarea = 'ActualizarVentas2026'
+$nombreTarea = 'ActualizarVentas2026_Agente_BI'
 
 $accion = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`""
