@@ -13,6 +13,7 @@ Sistema de análisis de datos de ventas en lenguaje natural. Traduce preguntas e
 - **Gráficos automáticos** (barras, línea, torta) con tamaño dinámico según cantidad de datos
 - **Informes completos en .docx** con estructura macro → micro: resumen ejecutivo, geográfico, tiendas, producto, referencia, talla, alertas
 - **Interfaz web** con historial de informes y gráficos, descarga de Word, feedback por respuesta
+- **Telegram** capacidad de generar archivos (informes, graficos y excel) y también chat normal.
 - **Ingesta incremental** de datos TXT con deduplicación MD5 en PostgreSQL
 - **Logging centralizado y trazable** — cada interacción, sin importar la interfaz de origen, queda en un único log diario con todas las consultas SQL que participaron en la respuesta
 - **Múltiples proveedores LLM**: Groq, Cerebras, Gemini (configurable en `.env`)
