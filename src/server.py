@@ -508,7 +508,7 @@ def _redactar_sobre_datos(
 def _manejar_conversacional(pregunta: str, contexto: dict) -> str:
     """Responde preguntas conversacionales usando el historial como contexto."""
     instrucciones_red = leer_instrucciones('redactor_respuesta.md')
-    m = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_red, re.DOTALL)
+    m = re.search(r'## Modo conversacional \(sin consulta SQL nueva\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_red, re.DOTALL)
     system_red = m.group(1).strip() if m else instrucciones_red
 
     historial_str = json.dumps(contexto.get('historial', []), ensure_ascii=False)
@@ -518,9 +518,7 @@ def _manejar_conversacional(pregunta: str, contexto: dict) -> str:
         f'El usuario dice: "{pregunta}"\n\n'
         f'Contexto de la sesión (últimos turnos):\n{historial_str}\n\n'
         f'Datos disponibles en memoria:\n{dfs_str}\n\n'
-        f'Responde de forma conversacional y natural. '
-        f'Si la pregunta pide una explicación o interpretación, usa el contexto de la sesión. '
-        f'No inventes datos que no estén en el contexto.'
+        f'Responde siguiendo las reglas del modo conversacional.'
     )
     return llamar_llm(system_red, prompt, temperatura=0.4)
 
