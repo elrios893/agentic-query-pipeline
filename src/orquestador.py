@@ -98,7 +98,7 @@ def _reglas_gen() -> str:
 9. NUNCA uses TRIM("SIGNO") ni ningun filtro sobre "SIGNO". DESC_MOVIMIENTO = 'VENTAS POS' ya delimita las ventas.
 10. CAST para ROUND en porcentajes y decimales: PostgreSQL requiere CAST(...AS numeric) antes de ROUND(). Si calculas porcentajes o decimales, usa siempre ROUND(CAST((SUM(...) * 100.0) / NULLIF(...) AS numeric), 2). NUNCA uses ROUND() sin CAST en operaciones aritmeticas.
 11. Comparaciones de periodos temporales (ej: enero vs febrero, mes1 vs mes2): NUNCA uses FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN. Usa UNA SOLA tabla con multiples CASE WHEN para cada periodo. Ejemplo correcto: SELECT SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero FROM tabla WHERE fecha BETWEEN ene_inicio AND feb_fin GROUP BY ...
-12. REFERENCIA siempre acompañada de GRUPO: Cuando la consulta incluya la columna "REFERENCIA" en el SELECT, DEBE incluir también UPPER(TRIM("GRUPO")) AS "GRUPO". Esto es obligatorio para que el usuario pueda contextualizar cada referencia dentro de su grupo de producto.
+12. REFERENCIA siempre acompañada de GRUPO: Cuando la consulta incluya la columna "REFERENCIA" en el SELECT, DEBE incluir también el grupo de producto. Si la tabla es ventas_unificada, usa TRIM("GRUPO_NORM") AS "GRUPO" (NUNCA la columna "GRUPO" cruda de esa vista). Si la tabla es ventas_2025 o ventas_2026 directamente, usa UPPER(TRIM("GRUPO")) AS "GRUPO". Esto es obligatorio para que el usuario pueda contextualizar cada referencia dentro de su grupo de producto.
 """
 
 def _reglas_val() -> str:
@@ -1135,7 +1135,7 @@ Tienes disponible la siguiente skill de informes que define los bloques disponib
 
 ### Mapeo obligatorio bloque → columna SQL
 Para cada bloque, DEBES usar estas columnas exactas al generar la SQL:
-- Bloque I (Referencia): SELECT TRIM("REFERENCIA"), TRIM("LINEA"), TRIM("GRUPO") con GROUP BY TRIM("REFERENCIA"), TRIM("LINEA"), TRIM("GRUPO") — incluir LINEA y GRUPO en lugar de DESC_ITEM
+- Bloque I (Referencia): SELECT TRIM("REFERENCIA"), TRIM("LINEA_NORM") AS "LINEA", TRIM("GRUPO_NORM") AS "GRUPO" con GROUP BY TRIM("REFERENCIA"), TRIM("LINEA_NORM"), TRIM("GRUPO_NORM") — incluir LINEA y GRUPO en lugar de DESC_ITEM (usar las columnas normalizadas de ventas_unificada, nunca LINEA/GRUPO crudas)
 - Bloque J (Talla): GROUP BY TRIM("TALLA") WHERE TRIM("TALLA") ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$'
 - Bloque G (Linea): GROUP BY TRIM("LINEA") — columna exacta: "LINEA"
 - Bloque H (Producto): GROUP BY TRIM("DESC_ITEM") — columna exacta: "DESC_ITEM"

@@ -305,7 +305,7 @@ Tomar la referencia con mayor venta total y mostrar su distribucion geografica:
 | Zona | Referencia | Línea | Grupo | Unidades | Valor COP |
 |---|---|---|---|---:|---:|
 
-**Datos necesarios:** `GROUP BY TRIM("REFERENCIA"), TRIM("LINEA"), TRIM("GRUPO")` + subconsulta por zona para la top.
+**Datos necesarios:** `GROUP BY TRIM("REFERENCIA"), TRIM("LINEA_NORM"), TRIM("GRUPO_NORM")` (usar las columnas normalizadas de `ventas_unificada`, nunca `LINEA`/`GRUPO` crudas) + subconsulta por zona para la top.
 
 ---
 
