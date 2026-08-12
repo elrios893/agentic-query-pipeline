@@ -1,5 +1,6 @@
-# Corre la ingesta incremental de ventas_2026 y, solo si trajo filas nuevas,
-# refresca la vista materializada ventas_unificada.
+# Corre la ingesta (por reconciliacion) de ventas_2026 y, solo si hubo
+# cambios (filas nuevas o eliminadas), refresca la vista materializada
+# ventas_unificada.
 # Pensado para correr varias veces por la manana via Task Scheduler (el TXT
 # de red se genera ~7:30pm del dia anterior, esto es una red de seguridad
 # por si el primer intento del dia encuentra el archivo bloqueado o la red
@@ -31,14 +32,15 @@ if ($ingestaExit -ne 0) {
     exit 1
 }
 
-$sinNuevas = $ingestaOutput | Select-String -Pattern 'Insertadas \(nuevas\)\s*:\s*0\s*$'
-if ($sinNuevas) {
-    Log "Sin filas nuevas -- se omite el refresco de la vista (ya esta al dia)."
+$sinNuevas    = $ingestaOutput | Select-String -Pattern 'Insertadas \(nuevas\)\s*:\s*0\s*$'
+$sinEliminadas = $ingestaOutput | Select-String -Pattern 'Eliminadas \(ya no en origen\)\s*:\s*0\s*$'
+if ($sinNuevas -and $sinEliminadas) {
+    Log "Sin cambios (0 nuevas, 0 eliminadas) -- se omite el refresco de la vista (ya esta al dia)."
     Log "===== Fin (sin cambios) ====="
     exit 0
 }
 
-Log "Filas nuevas detectadas -- refrescando ventas_unificada..."
+Log "Cambios detectados (nuevas y/o eliminadas) -- refrescando ventas_unificada..."
 $refreshOutput = & python scripts\refrescar_vista_ventas_items.py 2>&1
 $refreshExit = $LASTEXITCODE
 $refreshOutput | Add-Content -Path $logFile

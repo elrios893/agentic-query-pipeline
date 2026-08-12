@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """
-Ingesta incremental de datos de ventas a PostgreSQL.
+Ingesta por reconciliacion (mirror) de datos de ventas a PostgreSQL.
 Usa hash MD5 (server-side via PostgreSQL md5()) como clave de deduplicacion.
 
 Modos:
-  python ingesta_postgres.py --2026           # ingesta incremental de 2026
-  python ingesta_postgres.py --2025           # ingesta incremental de 2025
-  python ingesta_postgres.py --2026 --full-sync  # recrea tabla ventas_2026 desde cero
-  python ingesta_postgres.py --2025 --full-sync  # recrea tabla ventas_2025 desde cero
+  python ingesta_postgres.py --2026           # reconcilia ventas_2026 contra el TXT de hoy
+  python ingesta_postgres.py --2025           # reconcilia ventas_2025 contra el TXT de hoy
+  python ingesta_postgres.py --2026 --full-sync  # DESTRUCTIVO: DROP CASCADE + recrea ventas_2026
+  python ingesta_postgres.py --2025 --full-sync  # DESTRUCTIVO: DROP CASCADE + recrea ventas_2025
 
-Comportamiento incremental:
-  - Por cada chunk del TXT: carga en temp table SIN constraint UNIQUE,
-    calcula hash server-side, luego INSERT INTO ventas_YYYY ... ON CONFLICT DO NOTHING.
-  - La temp table se crea y destruye dentro de cada iteracion (sin ON COMMIT).
-  - Duplicados internos del TXT son absorbidos por ON CONFLICT en la tabla real.
-  - Segunda ejecucion con el mismo TXT: 0 insertadas, todo saltado.
+Comportamiento por reconciliacion (mirror):
+  - El TXT de origen es un snapshot acumulado completo (todo el año a la fecha),
+    no un delta. Cada corrida deja la tabla destino IDENTICA al TXT de hoy:
+      1. Todo el archivo se carga en una tabla de staging y se le calcula el hash.
+      2. DELETE de la tabla real de las filas cuyo row_hash ya no aparece en el
+         staging (fueron corregidas o eliminadas en el origen).
+      3. INSERT ... ON CONFLICT DO NOTHING de las filas del staging que sean nuevas.
+  - Como row_hash es un hash de fila completa, una fila "corregida" en el origen
+    (mismo evento, un valor distinto) se ve como: se borra la version vieja y se
+    inserta la nueva -- no quedan versiones duplicadas dando vueltas.
+  - Segunda ejecucion con el mismo TXT: 0 insertadas, 0 eliminadas, todo sin cambios.
+  - --full-sync usa DROP TABLE CASCADE: tambien tumba vistas dependientes (ej.
+    ventas_unificada). No usar en la tarea automatica de las mañanas; es una
+    herramienta de reinicio manual (cambios de esquema, recuperacion ante
+    corrupcion), no para mantener los datos al dia dia a dia.
 """
 import sys
 import os
@@ -67,11 +76,12 @@ def build_create_table_sql(df, table_name, col_hash='row_hash'):
         sql.SQL(', ').join(cols),
     )
 
-def build_create_temp_sql(columns, col_hash='row_hash'):
+def build_create_temp_sql(columns, col_hash='row_hash', nombre_tabla='ventas_staging'):
     """
-    DDL de la temp table: mismas columnas de datos + row_hash TEXT (sin UNIQUE).
-    Sin constraint para que filas duplicadas del mismo chunk no fallen aqui;
-    el ON CONFLICT de la tabla real se encarga de la dedup final.
+    DDL de la temp table de staging: mismas columnas de datos + row_hash TEXT
+    (sin UNIQUE). Sin constraint para que filas duplicadas del mismo TXT no
+    fallen aqui; el ON CONFLICT del INSERT final a la tabla real se encarga
+    de la dedup.
     """
     cols = []
     for col_name, dtype in columns:
@@ -80,7 +90,7 @@ def build_create_temp_sql(columns, col_hash='row_hash'):
         ]))
     cols.append(sql.Composed([sql.Identifier(col_hash), sql.SQL(' TEXT')]))
     return sql.SQL('CREATE TEMP TABLE {} ({});').format(
-        sql.Identifier('ventas_tmp'),
+        sql.Identifier(nombre_tabla),
         sql.SQL(', ').join(cols),
     )
 
@@ -336,12 +346,15 @@ def main():
             ensure_hash_column(cur, conn, tabla_destino, columns, col_hash)
 
         # ------------------------------------------------------------------
-        # 2. Ingesta incremental chunk a chunk
+        # 2. Cargar el archivo completo en una tabla de staging
         # ------------------------------------------------------------------
-        col_ids  = [sql.Identifier(c) for c in columns]
+        col_ids   = [sql.Identifier(c) for c in columns]
         hash_expr = build_hash_expr(columns)
-        inserted_total = 0
-        skipped_total  = 0
+        nombre_staging = 'ventas_staging'
+
+        cur.execute(f"DROP TABLE IF EXISTS {nombre_staging};")
+        cur.execute(build_create_temp_sql(col_dtypes, col_hash, nombre_staging))
+        conn.commit()
 
         for start in range(0, total, chunksize):
             chunk = df.iloc[start:start + chunksize]
@@ -355,65 +368,83 @@ def main():
             ]
             n = len(rows)
 
-            # --- temp table nueva por iteracion (sin UNIQUE) ---
-            cur.execute("DROP TABLE IF EXISTS ventas_tmp;")
-            cur.execute(build_create_temp_sql(col_dtypes, col_hash))
-
-            # Insertar datos en temp (sin hash)
             execute_values(
                 cur,
-                sql.SQL("INSERT INTO ventas_tmp ({}) VALUES %s").format(
-                    sql.SQL(', ').join(col_ids)
+                sql.SQL("INSERT INTO {} ({}) VALUES %s").format(
+                    sql.Identifier(nombre_staging),
+                    sql.SQL(', ').join(col_ids),
                 ).as_string(cur),
                 rows,
                 page_size=chunksize,
             )
-
-            # Calcular hash server-side en la temp table
-            cur.execute(sql.SQL("UPDATE ventas_tmp SET {} = md5({})").format(
-                sql.Identifier(col_hash), hash_expr))
-
-            # Mover a tabla real; ON CONFLICT salta duplicados
-            cur.execute(sql.SQL("""
-                WITH moved AS (
-                    INSERT INTO {} SELECT * FROM ventas_tmp
-                    ON CONFLICT ({}) DO NOTHING
-                    RETURNING 1
-                )
-                SELECT COUNT(*) FROM moved
-            """).format(
-                sql.Identifier(tabla_destino),
-                sql.Identifier(col_hash),
-            ))
-            inserted = cur.fetchone()[0]
-            skipped  = n - inserted
-            inserted_total += inserted
-            skipped_total  += skipped
-
-            cur.execute("DROP TABLE IF EXISTS ventas_tmp;")
             conn.commit()
+            print(f'  Cargado en staging: {start + n:>{len(str(total))},}/{total:,}')
 
-            print(f'  {start + n:>{len(str(total))},}/{total:,} '
-                  f'| +nuevas: {inserted:,}  ~saltadas: {skipped:,}')
+        print('  Calculando hashes (server-side MD5)...')
+        cur.execute(sql.SQL("UPDATE {} SET {} = md5({})").format(
+            sql.Identifier(nombre_staging), sql.Identifier(col_hash), hash_expr))
+        conn.commit()
+
+        print('  Indexando staging...')
+        cur.execute(sql.SQL("CREATE INDEX ON {} ({});").format(
+            sql.Identifier(nombre_staging), sql.Identifier(col_hash)))
+        conn.commit()
 
         # ------------------------------------------------------------------
-        # 3. Resumen
+        # 3. Reconciliar: la tabla destino queda identica al archivo de hoy
+        #    (borra lo que ya no esta en el origen, inserta lo nuevo)
+        # ------------------------------------------------------------------
+        print('  Reconciliando contra la tabla destino...')
+        cur.execute(sql.SQL("""
+            DELETE FROM {} t
+            WHERE NOT EXISTS (
+                SELECT 1 FROM {} s WHERE s.{} = t.{}
+            )
+        """).format(
+            sql.Identifier(tabla_destino),
+            sql.Identifier(nombre_staging),
+            sql.Identifier(col_hash),
+            sql.Identifier(col_hash),
+        ))
+        deleted_total = cur.rowcount
+
+        cur.execute(sql.SQL("""
+            WITH moved AS (
+                INSERT INTO {} SELECT * FROM {}
+                ON CONFLICT ({}) DO NOTHING
+                RETURNING 1
+            )
+            SELECT COUNT(*) FROM moved
+        """).format(
+            sql.Identifier(tabla_destino),
+            sql.Identifier(nombre_staging),
+            sql.Identifier(col_hash),
+        ))
+        inserted_total = cur.fetchone()[0]
+        skipped_total  = total - inserted_total
+
+        cur.execute(f"DROP TABLE IF EXISTS {nombre_staging};")
+        conn.commit()
+
+        # ------------------------------------------------------------------
+        # 4. Resumen
         # ------------------------------------------------------------------
         cur.execute(f"SELECT COUNT(*) FROM {tabla_destino}")
         total_db = cur.fetchone()[0]
 
         tf = datetime.now()
         print(f'\n[{tf:%H:%M:%S}] Completado en {tf - t0}')
-        print(f'  Insertadas (nuevas) : {inserted_total:,}')
-        print(f'  Saltadas (existian) : {skipped_total:,}')
-        print(f'  Total filas en DB   : {total_db:,}')
+        print(f'  Insertadas (nuevas)          : {inserted_total:,}')
+        print(f'  Eliminadas (ya no en origen) : {deleted_total:,}')
+        print(f'  Sin cambios (existian igual) : {skipped_total:,}')
+        print(f'  Total filas en DB            : {total_db:,}')
 
     except Exception as e:
         conn.rollback()
         print(f'\nERROR: {e}')
         raise
     finally:
-        cur.execute("DROP TABLE IF EXISTS ventas_tmp;")
+        cur.execute("DROP TABLE IF EXISTS ventas_staging;")
         try:
             conn.commit()
         except Exception:
