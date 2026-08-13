@@ -293,6 +293,25 @@ ORDER BY 2 DESC;
      LIMIT 20;
      ```
 
+22. **Excluir NULLs en columnas usadas para agrupar/rankear — CRÍTICO**: Cuando el `GROUP BY` (o el `PARTITION BY` de una window function) se hace sobre una columna categórica que puede tener valores nulos (`ZONA`, `ZONA_EX`, `DEPARTAMENTO`, `CIUDAD`, `DESC_DEPENDENCIA`, `RAZON_SOCIAL`, `CLIMA`, `DESC_ITEM`, `LINEA`, `GRUPO_NORM`, `GRUPO`, `REFERENCIA`, `COLOR`, `MARCA`, `DEPENDENCIA`, `TIPO_DEPENDENCIA`, `ESTADO_TIENDA`), agrega siempre `AND "columna" IS NOT NULL` al `WHERE` de la consulta o del CTE que agrupa.
+
+    Esto es especialmente crítico cuando la consulta busca un extremo (`MIN`/`MAX`, `ORDER BY ... LIMIT 1`, "la zona/categoría/tienda con más/menos ventas"): un grupo `NULL` puede colarse como si fuera un grupo real y, si tiene pocos registros o datos incompletos, aparecer artificialmente como el mínimo o el máximo — dando una respuesta que no corresponde a ningún dato real del negocio.
+
+    **Ejemplo (patrón del bug real)** — "¿Cuál es la categoría más vendida en la zona con menos ventas?":
+    ```sql
+    WITH ventas_por_zona AS (
+        SELECT UPPER(TRIM("ZONA")) AS "ZONA", SUM("CANTIDAD" * "PVP") AS "Total_Ventas_Zona"
+        FROM ventas_unificada
+        WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+          AND "Año" = 2026
+          AND "ZONA" IS NOT NULL   -- ← sin esto, una fila con ZONA nula puede "ganar" el MIN
+        GROUP BY 1
+        ORDER BY "Total_Ventas_Zona" ASC
+        LIMIT 1
+    )
+    ...
+    ```
+
 
 ### Esquema de la tabla `ventas_2025` / `ventas_2026`
 

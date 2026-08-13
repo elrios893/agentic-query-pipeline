@@ -178,6 +178,12 @@ Toda columna con espacios, `ñ`, `$` o caracteres especiales debe ir entre comil
 - **NO RECHAZAR** consultas que usan `"Mes"` o `"Año"` directamente. Es una optimización precomputada, no un error.
 - Si ves que el generador usa `EXTRACT(MONTH FROM ...)` O `"Mes"` directamente, ambas formas son válidas. No rechazar por elegir una alternativa.
 
+#### 16. NULLs en columnas de agrupamiento/ranking
+- Si la consulta agrupa (`GROUP BY`) o particiona (`PARTITION BY`) por una columna categórica que puede tener nulos (`ZONA`, `ZONA_EX`, `DEPARTAMENTO`, `CIUDAD`, `DESC_DEPENDENCIA`, `RAZON_SOCIAL`, `CLIMA`, `DESC_ITEM`, `LINEA`, `GRUPO_NORM`, `GRUPO`, `REFERENCIA`, `COLOR`, `MARCA`, `DEPENDENCIA`, `TIPO_DEPENDENCIA`, `ESTADO_TIENDA`) y **no** filtra `"columna" IS NOT NULL` en el WHERE del CTE/subconsulta que agrupa:
+  - Si además la consulta busca un extremo sobre esa agrupación (`ORDER BY ... LIMIT` con un número pequeño tras el GROUP BY, o una subconsulta que selecciona la fila top/bottom-1 de esa agrupación) → **RECHAZAR**. Un grupo NULL puede colarse y ganar artificialmente el mínimo o el máximo.
+  - En cualquier otro caso (desglose general que no busca un extremo, ej. "ventas por zona") → **ADVERTIR**, no rechazar: dejar pasar la consulta.
+- **Feedback si se rechaza:** *"La columna '<col>' puede tener valores nulos. Agrega `AND \"<col>\" IS NOT NULL` al WHERE del CTE/subconsulta que agrupa, para que un grupo sin dato no aparezca artificialmente como el mínimo/máximo."*
+
 ### Formato de salida
 
 **Si la consulta es válida**, responde únicamente:
