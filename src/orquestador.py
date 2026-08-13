@@ -6,6 +6,7 @@ Soporta multiples proveedores LLM configurados via .env (LLM_PROVIDER).
 import os
 import re
 import json
+import math
 import subprocess
 import sys
 import unicodedata
@@ -74,17 +75,38 @@ MAX_ITERACIONES = 3
 # ---------------------------------------------------------------------------
 def _reglas_gen() -> str:
     from datetime import datetime
-    anio = datetime.now().year
+    hoy      = datetime.now()
+    anio     = hoy.year
+    anio_ant = anio - 1
+    hoy_str         = hoy.strftime('%d/%m/%Y')
+    rango_fin_actual   = hoy.strftime('%Y-%m-%d')
+    rango_fin_anterior = f'{anio_ant}-{hoy.month:02d}-{hoy.day:02d}'
     return f"""
 
 ### Contexto temporal
-- Hoy es {datetime.now().strftime('%d/%m/%Y')}.
+- Hoy es {hoy_str}. El año {anio} está EN CURSO (no ha terminado).
 - TABLA PRINCIPAL: ventas_unificada — vista materializada que une ventas_2025 y ventas_2026 con GRUPO normalizado.
-  - Filtrar por año con WHERE "Año" = {anio} (2026) o WHERE "Año" = 2025.
+  - Filtrar por año con WHERE "Año" = {anio} ({anio}) o WHERE "Año" = {anio_ant}.
   - Columna "GRUPO_NORM": GRUPO estandarizado desde la tabla de segmentación. USAR SIEMPRE en lugar de "GRUPO" cuando la tabla sea ventas_unificada.
 - ventas_2025 y ventas_2026 solo usar si se necesita el dato crudo sin normalizar.
 - NUNCA uses FROM ventas sin sufijo ni _unificada.
 - Cuando el usuario mencione un dia o mes sin especificar año, SIEMPRE usa {anio} con ventas_unificada.
+
+### Comparaciones año en curso vs año histórico — CRÍTICO
+Comparar el año {anio} (en curso, solo tiene datos hasta {hoy_str}) contra el año {anio_ant} COMPLETO es una comparación FALSA: un lado tiene ~{hoy.timetuple().tm_yday} días de datos y el otro 365. Cualquier "caída" o "crecimiento" calculado así es artificial, no real.
+- Si el usuario pide comparar "este año"/"{anio}" contra "{anio_ant}"/"el año pasado" SIN pedir explícitamente el total anual completo de {anio_ant}, usa el MISMO rango de fechas en ambos años (mismo día del año):
+  - {anio}: TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '{anio}-01-01' AND '{rango_fin_actual}'
+  - {anio_ant}: TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '{anio_ant}-01-01' AND '{rango_fin_anterior}'
+  Patrón obligatorio (CASE WHEN, nunca JOIN — ver regla 11):
+  ```sql
+  SUM(CASE WHEN "Año"={anio} AND TO_DATE("FECHA_MVTO",'FMDD/FMMM/YYYY') BETWEEN '{anio}-01-01' AND '{rango_fin_actual}' THEN "CANTIDAD" ELSE 0 END) AS "Unidades_{anio}",
+  SUM(CASE WHEN "Año"={anio_ant} AND TO_DATE("FECHA_MVTO",'FMDD/FMMM/YYYY') BETWEEN '{anio_ant}-01-01' AND '{rango_fin_anterior}' THEN "CANTIDAD" ELSE 0 END) AS "Unidades_{anio_ant}"
+  ```
+- Excepción — SÍ usar el año completo sin restringir rango cuando:
+  - El usuario pide explícitamente el total/resumen anual completo de {anio_ant} (año ya terminado, sin ambigüedad de comparación).
+  - Ambos años comparados ya terminaron (ninguno es {anio}).
+  - El usuario pide explícitamente "todo el año {anio}" sabiendo que está en curso (ej. una proyección o total parcial declarado como tal).
+- Si aplicaste el rango equivalente, nombra las columnas de forma que quede claro (ej. "Unidades_{anio}_a_la_fecha" en vez de solo "Unidades_{anio}") para que el redactor pueda explicarlo.
 
 ### Reglas adicionales obligatorias
 1. Siempre usa comillas dobles en TODOS los nombres de columna.
@@ -97,14 +119,20 @@ def _reglas_gen() -> str:
 8. EXCEPCION: columna LINEA tiene casing mixto. Usar solo TRIM("LINEA") = '11 - Dama Deportivo'. NUNCA UPPER(TRIM("LINEA")).
 9. NUNCA uses TRIM("SIGNO") ni ningun filtro sobre "SIGNO". DESC_MOVIMIENTO = 'VENTAS POS' ya delimita las ventas.
 10. CAST para ROUND en porcentajes y decimales: PostgreSQL requiere CAST(...AS numeric) antes de ROUND(). Si calculas porcentajes o decimales, usa siempre ROUND(CAST((SUM(...) * 100.0) / NULLIF(...) AS numeric), 2). NUNCA uses ROUND() sin CAST en operaciones aritmeticas.
-11. Comparaciones de periodos temporales (ej: enero vs febrero, mes1 vs mes2): NUNCA uses FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN. Usa UNA SOLA tabla con multiples CASE WHEN para cada periodo. Ejemplo correcto: SELECT SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero FROM tabla WHERE fecha BETWEEN ene_inicio AND feb_fin GROUP BY ...
+11. Comparaciones de periodos temporales (ej: enero vs febrero, mes1 vs mes2, o {anio} vs {anio_ant}): NUNCA uses FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN. Usa UNA SOLA tabla con multiples CASE WHEN para cada periodo. Ejemplo correcto: SELECT SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero FROM tabla WHERE fecha BETWEEN ene_inicio AND feb_fin GROUP BY ...
 12. REFERENCIA siempre acompañada de GRUPO: Cuando la consulta incluya la columna "REFERENCIA" en el SELECT, DEBE incluir también el grupo de producto. Si la tabla es ventas_unificada, usa TRIM("GRUPO_NORM") AS "GRUPO" (NUNCA la columna "GRUPO" cruda de esa vista). Si la tabla es ventas_2025 o ventas_2026 directamente, usa UPPER(TRIM("GRUPO")) AS "GRUPO". Esto es obligatorio para que el usuario pueda contextualizar cada referencia dentro de su grupo de producto.
 """
 
 def _reglas_val() -> str:
     from datetime import datetime
-    anio = datetime.now().year
+    hoy      = datetime.now()
+    anio     = hoy.year
+    anio_ant = anio - 1
     return f"""
+
+### Fecha real del sistema (autoritativa — ignora cualquier otra fecha mencionada arriba)
+- Hoy es {hoy.strftime('%d/%m/%Y')}. El año {anio} está en curso.
+- Una fecha literal de {anio} anterior o igual a hoy NUNCA es "una fecha futura" — no rechaces por eso.
 
 ### Reglas adicionales obligatorias
 1. Verifica que TODOS los nombres de columna esten entre comillas dobles.
@@ -114,7 +142,8 @@ def _reglas_val() -> str:
 5. Revisa que use "CANTIDAD" * "PVP" para valor de ventas, no "PVP LISTA" (a menos que sea consulta macro).
 6. Revisa que los alias con mayusculas usen comillas dobles en ORDER BY/GROUP BY.
 7. Revisa que DEPARTAMENTO, CIUDAD, DESC_DEPENDENCIA, RAZON_SOCIAL, CLIMA, ZONA, ZONA_EX, DESC_ITEM usen UPPER(TRIM(...)). Si aparecen sin UPPER en el SELECT, NO rechazar — es opcional.
-8. Verifica que el año en los literales de fecha sea {anio} o 2025. Si ves 2024 u otro año en una fecha literal, RECHAZAR.
+8. Verifica que el año en los literales de fecha sea {anio} o {anio_ant}. Si ves un año anterior a {anio_ant} en una fecha literal, RECHAZAR. Fechas de {anio} hasta hoy ({hoy.strftime('%d/%m/%Y')}) son válidas, NUNCA "futuras".
+18. Comparación {anio} vs {anio_ant} sin rango equivalente: si la consulta compara el año {anio} completo (sin filtro de fecha que lo acote a lo transcurrido) contra el año {anio_ant} completo, y por el nombre de las columnas/alias no es evidente que el usuario pidió el total anual completo a propósito, ADVIERTE en el feedback que la comparación puede ser desigual (año en curso vs año completo) — pero NO rechaces solo por esto, es una decisión de negocio del generador, no un error de sintaxis.
 9. LINEA — excepcion critica: la columna LINEA tiene casing mixto. TRIM("LINEA") = '11 - Dama Deportivo' es CORRECTO. UPPER(TRIM("LINEA")) en un filtro WHERE es un ERROR — RECHAZAR si aparece. NUNCA rechazar una query por usar TRIM("LINEA") sin UPPER.
 10. SIGNO — prohibido: NUNCA debe aparecer TRIM("SIGNO") ni ningun filtro sobre "SIGNO" en la query. Si aparece → RECHAZAR e indicar que se elimine. DESC_MOVIMIENTO = 'VENTAS POS' ya delimita las ventas sin necesidad de SIGNO.
 11. LIMIT y window functions: si la consulta usa RANK(), ROW_NUMBER() o DENSE_RANK() con un filtro WHERE sobre el ranking (ej: WHERE ranking = 1), el resultado esta acotado por el numero de grupos del PARTITION BY — NO exigir LIMIT. Lineas de producto son ~10, departamentos ~33, tallas ~10: estos GROUP BY nunca necesitan LIMIT.
@@ -194,6 +223,50 @@ MAPEO_BLOQUES_GRAFICOS = {
 def leer_instrucciones(archivo: str) -> str:
     ruta = AGENTS_DIR / archivo
     return ruta.read_text(encoding='utf-8')
+
+
+def _secciones_nivel2(texto: str) -> dict[str, str]:
+    """Divide un archivo .md de agents/ en sus secciones de nivel '## ',
+    ignorando encabezados que aparezcan dentro de bloques de código (```) —
+    varias secciones incluyen ejemplos de salida que contienen '## ' como
+    texto literal, no como encabezado real."""
+    secciones: dict[str, str] = {}
+    nombre_actual = None
+    buffer: list[str] = []
+    en_fence = False
+    for linea in texto.split('\n'):
+        if linea.strip().startswith('```'):
+            en_fence = not en_fence
+            if nombre_actual is not None:
+                buffer.append(linea)
+            continue
+        if not en_fence and linea.startswith('## '):
+            if nombre_actual is not None:
+                secciones[nombre_actual] = '\n'.join(buffer).strip()
+            nombre_actual = linea[3:].strip()
+            buffer = []
+            continue
+        if nombre_actual is not None:
+            buffer.append(linea)
+    if nombre_actual is not None:
+        secciones[nombre_actual] = '\n'.join(buffer).strip()
+    return secciones
+
+
+def cargar_system_prompt(archivo: str, secciones: list[str]) -> str:
+    """Carga agents/<archivo> y concatena las secciones '## <nombre>' pedidas,
+    en el orden dado. Reemplaza el patrón anterior (regex que capturaba solo
+    hasta la primera '## ' siguiente) que dejaba fuera del system prompt
+    secciones enteras como 'Modo análisis profundo' o 'Manejo de Gráficos'."""
+    disponibles = _secciones_nivel2(leer_instrucciones(archivo))
+    partes = []
+    for nombre in secciones:
+        contenido = disponibles.get(nombre)
+        if contenido is None:
+            print(f'  [WARN] Sección "{nombre}" no encontrada en agents/{archivo}')
+            continue
+        partes.append(contenido)
+    return '\n\n'.join(partes)
 
 def leer_skill(nombre: str) -> str:
     ruta = SKILLS_DIR / nombre / 'SKILL.md'
@@ -395,26 +468,78 @@ def asegurar_limit_en_subquery(sql: str, valor_default: int = 10) -> tuple[str, 
     
     return sql_con_limit, True
 
+def _muestra_representativa(resultado: dict, limite: int) -> list:
+    """
+    Selecciona qué filas mostrar cuando el resultado excede 'limite'.
+
+    Un corte posicional (rows[:limite]) sobre un resultado con 2+ dimensiones
+    categóricas (ej. ZONA x CATEGORIA) sesga hacia las combinaciones de mayor
+    volumen y puede dejar zonas enteras sin representación — no porque esa
+    zona no importe, sino porque sus categorías individuales no entran en el
+    top-N global. Si se detecta una columna de baja cardinalidad, se reparte
+    el cupo entre TODOS sus valores para que ninguno quede en cero.
+    """
+    cols = resultado.get('columns', [])
+    rows = resultado.get('rows', [])
+    if len(rows) <= limite:
+        return rows
+
+    primera = dict(zip(cols, rows[0]))
+    cols_cat = [c for c, v in primera.items() if isinstance(v, str)]
+
+    idx_estrato = None
+    mejor_cardinalidad = None
+    for c in cols_cat:
+        idx = cols.index(c)
+        n = len({row[idx] for row in rows})
+        # Candidato válido: 2-30 grupos (evita columnas casi constantes y
+        # columnas de alta cardinalidad como REFERENCIA/DESC_ITEM). Entre
+        # varias columnas válidas, se prefiere la de menor cardinalidad.
+        if 2 <= n <= 30 and (mejor_cardinalidad is None or n < mejor_cardinalidad):
+            idx_estrato, mejor_cardinalidad = idx, n
+
+    if idx_estrato is None:
+        return rows[:limite]
+
+    grupos: dict = {}
+    for row in rows:
+        grupos.setdefault(row[idx_estrato], []).append(row)
+
+    cupo_por_grupo = max(1, limite // len(grupos))
+    muestra = []
+    for filas_grupo in grupos.values():
+        muestra.extend(filas_grupo[:cupo_por_grupo])
+
+    # Si algún grupo era más chico que su cupo, sobra presupuesto: rellenar
+    # con las siguientes filas de los grupos grandes hasta llegar al límite.
+    if len(muestra) < limite:
+        usados = {id(row) for row in muestra}
+        restantes = [row for row in rows if id(row) not in usados]
+        muestra.extend(restantes[:limite - len(muestra)])
+
+    return muestra[:limite]
+
+
 def formatear_resultado_como_tabla(resultado: dict, limite: int = 20) -> str:
     """
     Convierte un resultado SQL en tabla markdown formateada.
-    
+
     Args:
         resultado: dict con 'columns' y 'rows'
         limite: máximo de filas a mostrar (default 20)
-    
+
     Returns:
         Tabla markdown formateada o empty string si no hay datos
     """
     cols = resultado.get('columns', [])
     rows = resultado.get('rows', [])
-    
+
     if not cols or not rows:
         return ''
-    
-    # Limitar filas
+
+    # Limitar filas (muestra representativa si hay varias dimensiones)
     total_filas = len(rows)
-    rows_mostrados = rows[:limite]
+    rows_mostrados = _muestra_representativa(resultado, limite)
     
     # Encabezado
     lineas = []
@@ -435,14 +560,18 @@ def formatear_resultado_como_tabla(resultado: dict, limite: int = 20) -> str:
         fila_formateada = []
         for i, val in enumerate(row):
             # Formatear valores
-            if isinstance(val, (int, float)):
-                # Si es número grande, agregar separador de miles
-                if isinstance(val, int) and val > 999:
-                    val_str = f"{val:,}"
-                elif isinstance(val, float):
-                    val_str = f"{val:,.2f}"
+            if isinstance(val, bool):
+                val_str = str(val)
+            elif isinstance(val, int):
+                val_str = f"{val:,}" if val > 999 else str(val)
+            elif isinstance(val, float):
+                # SUM(...)/ROUND(CAST(...AS numeric)) llega como float aunque
+                # represente un conteo entero (ej. unidades) — sin decimales
+                # espurios si el valor no tiene parte fraccionaria.
+                if val == int(val):
+                    val_str = f"{int(val):,}"
                 else:
-                    val_str = str(val)
+                    val_str = f"{val:,.2f}"
             else:
                 val_str = str(val) if val is not None else ''
             fila_formateada.append(val_str)
@@ -1123,19 +1252,11 @@ def generar_informe(pregunta: str):
     print('INTENCION DETECTADA: GENERAR INFORME DE VENTAS')
     print('=' * 60)
 
-    instrucciones_gen = leer_instrucciones('generador_consultas.md')
-    instrucciones_val = leer_instrucciones('validador.md')
     skill_informe_planning  = leer_skill_bloques_resumen('informe_ventas')
     skill_informe_redaccion = leer_skill_sin_yaml('informe_ventas')
 
-    extraer_system_gen = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_gen, re.DOTALL)
-    extraer_system_val = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_val, re.DOTALL)
-
-    reglas_extra_gen = _reglas_gen()
-    reglas_extra_val = _reglas_val()
-
-    system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + reglas_extra_gen
-    system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + reglas_extra_val
+    system_gen = cargar_system_prompt('generador_consultas.md', ['Instrucciones (system prompt)']) + _reglas_gen()
+    system_val = cargar_system_prompt('validador.md', ['Instrucciones (system prompt)']) + _reglas_val()
 
     # ------------------------------------------------------------------
     # FASE 1: el LLM decide que consultas necesita segun la peticion
@@ -1236,7 +1357,7 @@ Responde con un JSON con esta estructura exacta:
             error_pg = resultado.get('error', '')
             print(f'  Error PostgreSQL: {error_pg}. Intentando correccion...')
             correccion = llamar_llm(
-                (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + reglas_extra_gen,
+                system_gen,
                 f'La siguiente SQL produjo un error en PostgreSQL:\n\nSQL:\n{sql_limpia}\n\nError:\n{error_pg}\n\nCorrige la SQL para la consulta "{nombre}". Responde solo con el SQL corregido.',
                 temperatura=0.1,
             )
@@ -1516,6 +1637,26 @@ def es_intencion_analisis(pregunta: str, resultado: dict | None = None) -> bool:
 # Pre-cómputo de métricas (Python puro, sin LLM)
 # ---------------------------------------------------------------------------
 
+def _a_float_seguro(v):
+    """Convierte a float si v es numérico o un string numérico. Excluye bool
+    (columnas booleanas como TIENE_NORM no son métricas agregables) y NaN
+    (pandas lo usa para representar nulos en columnas float — sin este guard,
+    un NaN llega hasta statistics.stdev() y lo hace fallar con
+    AttributeError en vez de un error manejable)."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        if isinstance(v, float) and math.isnan(v):
+            return None
+        return float(v)
+    if isinstance(v, str):
+        try:
+            return float(v.strip().replace(',', ''))
+        except ValueError:
+            return None
+    return None
+
+
 def pre_computar_metricas(resultado: dict) -> dict:
     """
     Calcula métricas derivadas sobre el resultado SQL antes de enviarlo al analista.
@@ -1523,9 +1664,12 @@ def pre_computar_metricas(resultado: dict) -> dict:
 
     Retorna dict con:
       - totales: suma de cada columna numérica
-      - min_max: valor mínimo y máximo con etiqueta de categoría
+      - min_max: valor mínimo y máximo con etiqueta compuesta de fila
       - top3_concentracion_pct: % que acumulan las 3 primeras filas
-      - concentracion_por_categoria: % de cada categoría sobre el total (si hay col de texto)
+      - concentracion_por_dimension: % agregado por CADA columna categórica de
+        cardinalidad razonable (no solo la primera) — ej. en un resultado
+        zona x categoría, da la distribución completa por zona Y por
+        categoría por separado, aunque el resultado tenga cientos de filas.
       - variaciones_pct: cambio % entre filas consecutivas
       - tendencia_variaciones: 'creciente' | 'decreciente' | 'volatil' | 'estable'
       - outliers: filas con valor > media ± 2*std
@@ -1540,13 +1684,26 @@ def pre_computar_metricas(resultado: dict) -> dict:
     if not cols or not rows:
         return {}
 
-    # Identificar columnas numéricas y categóricas
+    # Identificar columnas numéricas y categóricas. consultar_db.py ya preserva
+    # tipos nativos (int/float), pero se mantiene un fallback de coerción por
+    # si otra ruta vuelve a stringificar los valores.
     primera = dict(zip(cols, rows[0]))
-    cols_num = [c for c, v in primera.items() if isinstance(v, (int, float))]
-    col_cat  = next((c for c, v in primera.items() if isinstance(v, str)), None)
+    cols_num       = [c for c, v in primera.items() if _a_float_seguro(v) is not None]
+    cols_cat_todas = [c for c, v in primera.items() if isinstance(v, str)]
 
     if not cols_num:
         return {}
+
+    def _label_fila(row) -> str:
+        """Etiqueta compuesta con TODAS las columnas de texto de la fila
+        (ej. 'ANTIOQUIA / TEMPLADO / 02 - Camiseta manga corta'), no solo la
+        primera — para que min/max/outliers/gaps sigan siendo identificables
+        cuando el resultado tiene varias dimensiones categóricas."""
+        if not cols_cat_todas:
+            return ''
+        rd = dict(zip(cols, row))
+        partes = [str(rd.get(c, '')).strip() for c in cols_cat_todas]
+        return ' / '.join(p for p in partes if p)
 
     metricas = {}
 
@@ -1557,7 +1714,8 @@ def pre_computar_metricas(resultado: dict) -> dict:
         for row in rows:
             rd = dict(zip(cols, row))
             v  = rd.get(col)
-            vals.append(float(v) if isinstance(v, (int, float)) else 0.0)
+            f  = _a_float_seguro(v)
+            vals.append(f if f is not None else 0.0)
         vectores[col] = vals
 
     for col, valores in vectores.items():
@@ -1570,8 +1728,8 @@ def pre_computar_metricas(resultado: dict) -> dict:
         # Min / Max con etiqueta
         idx_max = valores.index(max(valores))
         idx_min = valores.index(min(valores))
-        label_max = str(dict(zip(cols, rows[idx_max])).get(col_cat, idx_max)) if col_cat else str(idx_max)
-        label_min = str(dict(zip(cols, rows[idx_min])).get(col_cat, idx_min)) if col_cat else str(idx_min)
+        label_max = _label_fila(rows[idx_max]) or str(idx_max)
+        label_min = _label_fila(rows[idx_min]) or str(idx_min)
         metricas.setdefault('min_max', {})[col] = {
             'max': {'valor': round(max(valores), 2), 'en': label_max},
             'min': {'valor': round(min(valores), 2), 'en': label_min},
@@ -1582,32 +1740,47 @@ def pre_computar_metricas(resultado: dict) -> dict:
             top3_suma = sum(sorted(valores, reverse=True)[:3])
             metricas.setdefault('top3_concentracion_pct', {})[col] = round(top3_suma / total * 100, 1)
 
-        # Concentración por categoría (% de cada fila sobre el total)
-        if col_cat and total > 0:
-            dist = []
-            for i, v in enumerate(valores):
-                label = str(dict(zip(cols, rows[i])).get(col_cat, i))
-                dist.append({
-                    'categoria': label,
-                    'valor':     round(v, 2),
-                    'pct':       round(v / total * 100, 1),
-                })
-            # Solo incluir si hay variación significativa (no todos iguales)
-            pcts = [d['pct'] for d in dist]
-            if max(pcts) - min(pcts) > 2:
-                metricas.setdefault('concentracion_por_categoria', {})[col] = sorted(
+        # Concentración por CADA dimensión categórica (agregando por esa
+        # dimensión, no por fila cruda) — en un resultado zona x categoría
+        # esto da la distribución completa por zona Y por categoría por
+        # separado, aunque el resultado tenga cientos de filas y ninguna
+        # combinación individual represente bien a su zona o su categoría.
+        if total > 0:
+            for col_dim in cols_cat_todas:
+                agregados: dict[str, float] = {}
+                for i, v in enumerate(valores):
+                    rd = dict(zip(cols, rows[i]))
+                    clave = str(rd.get(col_dim, '')).strip() or 'N/A'
+                    agregados[clave] = agregados.get(clave, 0.0) + v
+                n_grupos = len(agregados)
+                # Ni casi-constante (1 grupo) ni de alta cardinalidad (ej.
+                # REFERENCIA con cientos de valores) — entre 2 y 60 grupos.
+                if n_grupos < 2 or n_grupos > 60:
+                    continue
+                dist = [
+                    {'categoria': k, 'valor': round(val, 2), 'pct': round(val / total * 100, 1)}
+                    for k, val in agregados.items()
+                ]
+                pcts = [d['pct'] for d in dist]
+                if max(pcts) - min(pcts) <= 2:
+                    continue  # sin variación significativa entre grupos
+                metricas.setdefault('concentracion_por_dimension', {}).setdefault(col, {})[col_dim] = sorted(
                     dist, key=lambda x: x['valor'], reverse=True
-                )[:10]  # top 10 para no saturar el contexto
+                )[:15]
 
-        # Variaciones % entre filas consecutivas
+        # Variaciones % entre filas consecutivas. Solo tiene sentido como
+        # "tendencia" si hay a lo sumo 1 dimensión categórica — con 2+ (ej.
+        # zona x categoría), la fila i y la i+1 suelen ser combinaciones sin
+        # relación real entre sí, y una "tendencia decreciente" ahí sería una
+        # lectura falsa del orden en que las devolvió el SQL.
         variaciones_pct_vals = []
-        if n >= 2:
+        if n >= 2 and len(cols_cat_todas) <= 1:
             variaciones = []
             for i in range(1, n):
                 ant = valores[i - 1]
                 act = valores[i]
                 pct = round((act - ant) / abs(ant) * 100, 1) if ant != 0 else None
-                label = str(dict(zip(cols, rows[i])).get(col_cat, i)) if col_cat else str(i)
+                label = _label_fila(rows[i]) or str(i)
                 variaciones.append({'en': label, 'variacion_pct': pct})
                 if pct is not None:
                     variaciones_pct_vals.append(pct)
@@ -1627,7 +1800,11 @@ def pre_computar_metricas(resultado: dict) -> dict:
                 try:
                     std_var = statistics.stdev(variaciones_pct_vals)
                     tendencia = 'volatil' if std_var > 20 else 'estable'
-                except statistics.StatisticsError:
+                except (statistics.StatisticsError, AttributeError, ArithmeticError):
+                    # statistics.stdev() puede fallar con AttributeError ante
+                    # ciertos valores float extremos (bug conocido de CPython
+                    # en su camino de cálculo exacto vía Fraction) — esto es
+                    # una métrica derivada, no debe tumbar el pipeline.
                     tendencia = 'estable'
             metricas.setdefault('tendencia_variaciones', {})[col] = tendencia
 
@@ -1639,7 +1816,7 @@ def pre_computar_metricas(resultado: dict) -> dict:
                 outs  = []
                 for i, v in enumerate(valores):
                     if std > 0 and abs(v - media) > 2 * std:
-                        label = str(dict(zip(cols, rows[i])).get(col_cat, i)) if col_cat else str(i)
+                        label = _label_fila(rows[i]) or str(i)
                         outs.append({
                             'en':               label,
                             'valor':            round(v, 2),
@@ -1648,17 +1825,17 @@ def pre_computar_metricas(resultado: dict) -> dict:
                         })
                 if outs:
                     metricas.setdefault('outliers', {})[col] = outs
-            except statistics.StatisticsError:
+            except (statistics.StatisticsError, AttributeError, ArithmeticError):
                 pass
 
         # Gaps: posiciones con valor 0
         gaps = []
         for i, v in enumerate(valores):
             if v == 0:
-                label = str(dict(zip(cols, rows[i])).get(col_cat, i)) if col_cat else str(i)
+                label = _label_fila(rows[i]) or str(i)
                 gaps.append(label)
         if gaps:
-            metricas.setdefault('gaps_valor_cero', {})[col] = gaps
+            metricas.setdefault('gaps_valor_cero', {})[col] = gaps[:20]  # cap para no saturar
 
     # — Ratios cruzados entre columnas numéricas —
     # PVP promedio ponderado: si hay columna de CANTIDAD y columna de VALOR
@@ -1737,6 +1914,39 @@ def _sql_queries_desde_acumulados(datos_acumulados: list[dict]) -> list[dict]:
     return queries
 
 
+def _fusionar_hallazgos(acumulado: dict, parcial: dict) -> None:
+    """Acumula patrones/anomalias/hipotesis de un 'analisis_parcial' de una
+    ronda intermedia, para que no se pierdan si el analista no los repite en
+    la ronda final."""
+    for clave in ('patrones', 'anomalias', 'hipotesis'):
+        nuevos = parcial.get(clave) or []
+        acumulado.setdefault(clave, []).extend(nuevos)
+
+
+def _ejecutar_consulta_con_reintento(sql: str, system_gen: str) -> tuple[dict, str]:
+    """Ejecuta una SQL; si Postgres devuelve error, reintenta UNA vez
+    reinyectando el mensaje de error al generador (mismo patrón que
+    generar_informe usa para sus bloques). No aborta el análisis si falla
+    dos veces — el llamador decide si descarta esta consulta puntual."""
+    resultado = ejecutar_consulta(sql)
+    if resultado.get('success'):
+        return resultado, sql
+
+    error_pg = resultado.get('error', '')
+    print(f'  [analista] Error en consulta complementaria: {error_pg} — reintentando con corrección...')
+    correccion = llamar_llm(
+        system_gen,
+        f'La siguiente SQL produjo un error en PostgreSQL:\n\nSQL:\n{sql}\n\n'
+        f'Error:\n{error_pg}\n\nCorrige la SQL. Responde solo con el SQL corregido.',
+        temperatura=0.1,
+    )
+    sql_corregida = extraer_sql(correccion)
+    resultado_corregido = ejecutar_consulta(sql_corregida)
+    if resultado_corregido.get('success'):
+        return resultado_corregido, sql_corregida
+    return resultado_corregido, sql_corregida
+
+
 def agente_analista(
     pregunta: str,
     resultado_inicial: dict,
@@ -1746,12 +1956,13 @@ def agente_analista(
 ) -> dict:
     """
     Ejecuta el análisis profundo sobre los datos.
-    Puede pedir hasta MAX_RONDAS_ANALISTA consultas adicionales al generador.
+    Puede pedir hasta MAX_RONDAS_ANALISTA rondas de consultas adicionales al
+    generador (hasta 3 consultas por ronda, ejecutadas secuencialmente).
 
     Retorna el JSON estructurado final del analista:
     {
       "estado": "completo",
-      "patrones": [...],
+      "patrones": [{"afirmacion","evidencia","ronda","confianza"}, ...],
       "anomalias": [...],
       "hipotesis": [...],
       "datos_usados": [...],
@@ -1759,54 +1970,64 @@ def agente_analista(
       "preguntas_sugeridas": [...]
     }
     """
-    system_analista = leer_instrucciones('analista.md')
-    # Extraer solo la sección de instrucciones del system prompt
-    m = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*)', system_analista, re.DOTALL)
-    system_analista = m.group(1).strip() if m else system_analista
+    system_analista = cargar_system_prompt('analista.md', ['Instrucciones (system prompt)'])
 
-    # Acumular todos los datos a través de las rondas
+    # Acumular todos los datos a través de las rondas. Cada entrada guarda su
+    # propia 'metricas' (pre-computada una sola vez, no en cada iteración).
     datos_acumulados = [
         {
             'ronda':       0,
             'descripcion': 'Consulta inicial del usuario',
             'sql':         sql_inicial,
             'resultado':   resultado_inicial,
+            'metricas':    pre_computar_metricas(resultado_inicial),
         }
     ]
+    # Hallazgos de 'analisis_parcial' en rondas intermedias que el analista
+    # ya derivó — se reinyectan para que no se pierdan ni se re-deriven.
+    hallazgos_acumulados: dict = {}
 
     for ronda in range(MAX_RONDAS_ANALISTA + 1):
-        # Pre-computar métricas sobre el resultado más reciente
-        resultado_reciente = datos_acumulados[-1]['resultado']
-        metricas = pre_computar_metricas(resultado_reciente)
-
-        # Construir prompt para el analista
+        # Construir prompt para el analista. Contexto lineal, no cuadrático:
+        # solo la ronda más reciente lleva filas crudas; las anteriores solo
+        # su descripción + SQL + métricas ya calculadas.
         prompt = f"""Pregunta original del usuario: "{pregunta}"
 
 === DATOS DISPONIBLES ===
 
 """
         for d in datos_acumulados:
+            es_reciente = d['ronda'] == ronda
             prompt += f"--- Ronda {d['ronda']}: {d['descripcion']} ---\n"
             prompt += f"SQL usado:\n{d['sql']}\n\n"
-            prompt += f"Resultado ({d['resultado'].get('total_filas', 0)} filas):\n"
-            prompt += json.dumps({
-                'columns': d['resultado'].get('columns', []),
-                'rows':    d['resultado'].get('rows', [])[:50],  # máx 50 filas al LLM
-            }, ensure_ascii=False, indent=2)
+            if es_reciente:
+                prompt += f"Resultado ({d['resultado'].get('total_filas', 0)} filas):\n"
+                prompt += json.dumps({
+                    'columns': d['resultado'].get('columns', []),
+                    'rows':    d['resultado'].get('rows', [])[:50],  # máx 50 filas al LLM
+                }, ensure_ascii=False, indent=2)
+                prompt += '\n\nMétricas pre-computadas de esta ronda:\n'
+                prompt += json.dumps(d['metricas'], ensure_ascii=False, indent=2)
+            else:
+                prompt += f"Resultado: {d['resultado'].get('total_filas', 0)} filas (no repetidas aquí — usa las métricas).\n"
+                prompt += 'Métricas pre-computadas:\n'
+                prompt += json.dumps(d['metricas'], ensure_ascii=False, indent=2)
             prompt += '\n\n'
 
-        prompt += f"""=== MÉTRICAS PRE-COMPUTADAS (última ronda) ===
-{json.dumps(metricas, ensure_ascii=False, indent=2)}
+        if any(hallazgos_acumulados.values()):
+            prompt += '=== HALLAZGOS YA DERIVADOS EN RONDAS ANTERIORES (no los repitas) ===\n'
+            prompt += json.dumps(hallazgos_acumulados, ensure_ascii=False, indent=2)
+            prompt += '\n\n'
 
-=== INSTRUCCIÓN ===
-"""
+        prompt += '=== INSTRUCCIÓN ===\n'
         if ronda >= MAX_RONDAS_ANALISTA:
             prompt += 'Has alcanzado el límite de rondas. Produce el análisis completo con los datos que tienes. Responde con estado "completo".'
         else:
             prompt += (
                 f'Ronda {ronda + 1} de {MAX_RONDAS_ANALISTA} posibles. '
-                'Analiza los datos. Si necesitas más información, responde con estado "necesita_datos". '
-                'Si tienes suficiente para un análisis completo, responde con estado "completo".'
+                'Analiza los datos. Si necesitas más información, responde con estado "necesita_datos" '
+                'y hasta 3 "consultas_adicionales". Si tienes suficiente para un análisis completo, '
+                'responde con estado "completo".'
             )
 
         print(f'  [{MODELO}] Analista — ronda {ronda + 1}...')
@@ -1825,9 +2046,9 @@ def agente_analista(
             print('  [analista] No se pudo parsear JSON. Usando respuesta cruda.')
             return {
                 'estado':    'completo',
-                'patrones':  [],
-                'anomalias': [],
-                'hipotesis': [],
+                'patrones':  hallazgos_acumulados.get('patrones', []),
+                'anomalias': hallazgos_acumulados.get('anomalias', []),
+                'hipotesis': hallazgos_acumulados.get('hipotesis', []),
                 'datos_usados': [{'descripcion': d['descripcion'], 'filas': d['resultado'].get('total_filas', 0), 'columnas': d['resultado'].get('columns', [])} for d in datos_acumulados],
                 'conclusion': respuesta_raw,
                 'preguntas_sugeridas': [],
@@ -1837,6 +2058,11 @@ def agente_analista(
         estado = analisis.get('estado', 'completo')
 
         if estado == 'completo' or ronda >= MAX_RONDAS_ANALISTA:
+            # Fusionar hallazgos de rondas intermedias que no se hayan repetido
+            for clave in ('patrones', 'anomalias', 'hipotesis'):
+                previos = hallazgos_acumulados.get(clave, [])
+                if previos:
+                    analisis[clave] = previos + (analisis.get(clave) or [])
             # Enriquecer con lista de datos usados si no viene incluida
             if 'datos_usados' not in analisis or not analisis['datos_usados']:
                 analisis['datos_usados'] = [
@@ -1851,52 +2077,61 @@ def agente_analista(
             print(f'  [analista] Análisis completo en ronda {ronda + 1}.')
             return analisis
 
-        # estado == 'necesita_datos' — pedir consulta complementaria
-        solicitud = analisis.get('consulta_adicional', {})
-        pregunta_adicional = solicitud.get('pregunta', '')
-        contexto_adicional = solicitud.get('contexto', '')
-        razon              = analisis.get('razon', '')
+        # estado == 'necesita_datos' — acumular hallazgos parciales y pedir
+        # hasta 3 consultas complementarias, ejecutadas secuencialmente.
+        _fusionar_hallazgos(hallazgos_acumulados, analisis.get('analisis_parcial', {}))
 
-        if not pregunta_adicional:
-            print('  [analista] Pidió datos adicionales pero sin pregunta. Terminando.')
+        solicitudes = analisis.get('consultas_adicionales') or []
+        razon = analisis.get('razon', '')
+
+        if not solicitudes:
+            print('  [analista] Pidió datos adicionales pero sin consultas_adicionales. Terminando.')
             analisis['estado'] = 'completo'
+            for clave in ('patrones', 'anomalias', 'hipotesis'):
+                previos = hallazgos_acumulados.get(clave, [])
+                if previos:
+                    analisis[clave] = previos + (analisis.get(clave) or [])
             analisis['sql_queries'] = _sql_queries_desde_acumulados(datos_acumulados)
             return analisis
 
-        print(f'  [analista] Solicita datos adicionales (ronda {ronda + 1}): {pregunta_adicional}')
+        print(f'  [analista] Solicita {len(solicitudes)} consulta(s) adicional(es) (ronda {ronda + 1}).')
         print(f'             Razón: {razon}')
 
-        # Generar SQL para la consulta complementaria con contexto enriquecido
-        prompt_gen_adicional = (
-            f'{pregunta_adicional}\n\n'
-            f'Contexto adicional para esta consulta: {contexto_adicional}\n'
-            f'Columnas que se esperan en el resultado: {json.dumps(solicitud.get("columnas_esperadas", []))}'
-        )
-        sql_adicional = generar_sql_y_validar(prompt_gen_adicional, system_gen, system_val)
+        for solicitud in solicitudes[:3]:
+            pregunta_adicional = solicitud.get('pregunta', '')
+            if not pregunta_adicional:
+                continue
+            contexto_adicional = solicitud.get('contexto', '')
 
-        print(f'  Ejecutando consulta complementaria...')
-        resultado_adicional = ejecutar_consulta(sql_adicional)
+            print(f'    - {pregunta_adicional}')
+            prompt_gen_adicional = (
+                f'{pregunta_adicional}\n\n'
+                f'Contexto adicional para esta consulta: {contexto_adicional}\n'
+                f'Columnas que se esperan en el resultado: {json.dumps(solicitud.get("columnas_esperadas", []))}'
+            )
+            sql_adicional = generar_sql_y_validar(prompt_gen_adicional, system_gen, system_val)
+            resultado_adicional, sql_adicional = _ejecutar_consulta_con_reintento(sql_adicional, system_gen)
 
-        if not resultado_adicional.get('success'):
-            print(f'  [analista] Error en consulta complementaria: {resultado_adicional.get("error")} — terminando análisis con datos actuales.')
-            analisis['estado'] = 'completo'
-            if 'datos_usados' not in analisis:
-                analisis['datos_usados'] = []
-            analisis['sql_queries'] = _sql_queries_desde_acumulados(datos_acumulados)
-            return analisis
+            if not resultado_adicional.get('success'):
+                print(f'    Descartada tras reintento: {resultado_adicional.get("error")}')
+                continue
 
-        print(f'  Complementaria OK: {resultado_adicional.get("total_filas", 0)} filas obtenidas.')
-        datos_acumulados.append({
-            'ronda':       ronda + 1,
-            'descripcion': pregunta_adicional,
-            'sql':         sql_adicional,
-            'resultado':   resultado_adicional,
-        })
+            print(f'    OK: {resultado_adicional.get("total_filas", 0)} filas obtenidas.')
+            datos_acumulados.append({
+                'ronda':       ronda + 1,
+                'descripcion': pregunta_adicional,
+                'sql':         sql_adicional,
+                'resultado':   resultado_adicional,
+                'metricas':    pre_computar_metricas(resultado_adicional),
+            })
 
     # Nunca debería llegar aquí, pero por seguridad:
     return {
-        'estado': 'completo', 'conclusion': 'Análisis completado.', 'patrones': [],
-        'anomalias': [], 'hipotesis': [], 'datos_usados': [], 'preguntas_sugeridas': [],
+        'estado': 'completo', 'conclusion': 'Análisis completado.',
+        'patrones':  hallazgos_acumulados.get('patrones', []),
+        'anomalias': hallazgos_acumulados.get('anomalias', []),
+        'hipotesis': hallazgos_acumulados.get('hipotesis', []),
+        'datos_usados': [], 'preguntas_sugeridas': [],
         'sql_queries': _sql_queries_desde_acumulados(datos_acumulados),
     }
 
@@ -1927,17 +2162,10 @@ def procesar_consulta(pregunta: str, contexto_refinamiento: dict | None = None):
           'analisis':     dict | None,
         }
     """
-    instrucciones_gen = leer_instrucciones('generador_consultas.md')
-    instrucciones_val = leer_instrucciones('validador.md')
-    instrucciones_red = leer_instrucciones('redactor_respuesta.md')
-
-    extraer_system_gen = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_gen, re.DOTALL)
-    extraer_system_val = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_val, re.DOTALL)
-    extraer_system_red = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_red, re.DOTALL)
-
-    system_gen = (extraer_system_gen.group(1).strip() if extraer_system_gen else instrucciones_gen) + _reglas_gen()
-    system_val = (extraer_system_val.group(1).strip() if extraer_system_val else instrucciones_val) + _reglas_val()
-    system_red = extraer_system_red.group(1).strip() if extraer_system_red else instrucciones_red
+    system_gen = cargar_system_prompt('generador_consultas.md', ['Instrucciones (system prompt)']) + _reglas_gen()
+    system_val = cargar_system_prompt('validador.md', ['Instrucciones (system prompt)']) + _reglas_val()
+    # system_red se compone más abajo, una vez se sabe si hubo análisis
+    # profundo y/o gráfico — cada modo necesita secciones distintas del .md.
 
     # ------------------------------------------------------------------
     # Inyectar contexto de refinamiento en el generador
@@ -1988,16 +2216,16 @@ explícitamente pida cambiarlos.
     print(f'Resultado: {total_filas} fila(s) obtenidas.\n')
 
     # ------------------------------------------------------------------
-    # Truncar a 50 filas para el LLM y auto-generar Excel si >100 filas
+    # Auto-generar Excel si >100 filas. 'resultado' se mantiene íntegro
+    # (no se trunca aquí) para que el analista, los gráficos y el DataFrame
+    # de sesión (server.py) trabajen sobre el dataset completo — el
+    # truncado a 50 filas se aplica solo a la vista que ve el redactor.
     # ------------------------------------------------------------------
-    filas_completas = resultado.get('rows', [])
     ruta_excel = ''
     excel_auto = False
-    if total_filas > 100 and filas_completas:
+    if total_filas > 100 and resultado.get('rows'):
         print(f'[{MODELO}] Mas de 100 filas ({total_filas}). Generando Excel con todos los datos...')
         ruta_excel = exportar_excel_desde_resultado(resultado, pregunta)
-        resultado['rows'] = filas_completas[:50]
-        resultado['total_filas'] = total_filas
         excel_auto = bool(ruta_excel)
 
     # ------------------------------------------------------------------
@@ -2049,31 +2277,67 @@ explícitamente pida cambiarlos.
     # ------------------------------------------------------------------
     # Redactar respuesta final
     # ------------------------------------------------------------------
+    # El system prompt del redactor se compone según el modo: la sección
+    # 'Modo análisis profundo' del .md ya trae su propia estructura de 6
+    # bloques — no se duplica aquí.
+    secciones_red = ['Instrucciones (system prompt)']
+    if imagenes_chat:
+        secciones_red.append('Manejo de Gráficos en Respuestas')
+    if analisis_profundo:
+        secciones_red.append('Modo análisis profundo')
+    system_red = cargar_system_prompt('redactor_respuesta.md', secciones_red)
+
     print(f'[{MODELO}] Redactando respuesta...')
-    # Se incluye el SQL realmente ejecutado (no la pregunta del usuario) para
-    # que el redactor pueda abrir la respuesta indicando objeto y período
-    # reales analizados — ver regla 2 de redactor_respuesta.md.
-    prompt_red = (
-        f'### Consulta SQL ejecutada\n```sql\n{sql_final}\n```\n\n'
-        f'### Resultado\n{json.dumps(resultado, ensure_ascii=False, indent=2)}'
+    # Se incluye la pregunta original para que el redactor sepa qué se pidió,
+    # pero el objeto/período que abre la respuesta se sigue derivando del SQL
+    # realmente ejecutado (no de la pregunta) — ver regla 2 de
+    # redactor_respuesta.md: el generador pudo interpretar "este mes" o una
+    # tienda/línea distinto a lo que el usuario nombró.
+    # 'resultado' se mantiene íntegro para el resto del pipeline (analista,
+    # gráficos, DataFrame de sesión); aquí se trunca solo la vista que ve
+    # el redactor, que ya no necesita más de 50 filas para redactar.
+    # La muestra es representativa (no un corte posicional) — ver
+    # _muestra_representativa. Si el resultado tiene 2+ dimensiones
+    # categóricas, además se adjunta el desglose completo agregado por cada
+    # dimensión (concentracion_por_dimension) para que ningún grupo quede
+    # sin representar aunque no haya entrado en la muestra de filas.
+    resultado_para_redactor = resultado
+    digest_para_redactor = None
+    if total_filas > 100:
+        resultado_para_redactor = {**resultado, 'rows': _muestra_representativa(resultado, 50)}
+        metricas_regulares = pre_computar_metricas(resultado)
+        digest_para_redactor = metricas_regulares.get('concentracion_por_dimension')
+    titulo_resultado = (
+        f'### Resultado (muestra representativa de {len(resultado_para_redactor["rows"])} de {total_filas} filas)'
+        if total_filas > 100 else '### Resultado'
     )
+    prompt_red = (
+        f'### Pregunta original del usuario\n"{pregunta}"\n\n'
+        f'### Consulta SQL ejecutada\n```sql\n{sql_final}\n```\n\n'
+        f'{titulo_resultado}\n{json.dumps(resultado_para_redactor, ensure_ascii=False, indent=2)}'
+    )
+    if digest_para_redactor:
+        prompt_red += (
+            f'\n\n### Desglose completo por dimensión (sobre las {total_filas} filas reales, no la muestra)\n'
+            f'{json.dumps(digest_para_redactor, ensure_ascii=False, indent=2)}\n\n'
+            'Usa este desglose para que tu resumen represente a TODOS los grupos '
+            '(ej. todas las zonas), no solo a los que aparecen en la muestra de filas de arriba.'
+        )
 
     if analisis_profundo:
+        # sql_queries es solo para trazabilidad (prompt_logger) — no aporta
+        # nada al redactor y son ~500 tokens de SQL crudo que no debe ver.
+        analisis_para_redactor = {k: v for k, v in analisis_profundo.items() if k != 'sql_queries'}
         prompt_red += f'\n\n### Análisis Profundo del Agente Analista\n'
-        prompt_red += json.dumps(analisis_profundo, ensure_ascii=False, indent=2)
+        prompt_red += json.dumps(analisis_para_redactor, ensure_ascii=False, indent=2)
         prompt_red += (
-            '\n\nEl análisis profundo ya está hecho. Tu tarea es redactarlo de forma clara y natural. '
-            'Estructura la respuesta así:\n'
-            '1. Resumen de los datos (tabla si aplica)\n'
-            '2. Patrones y anomalías encontrados\n'
-            '3. Hipótesis y causas probables\n'
-            '4. Conclusión\n'
-            '5. Preguntas sugeridas para profundizar (si las hay)\n'
-            'No repitas los números crudos del JSON — intégralos en texto fluido.'
+            '\n\nEl análisis profundo ya está hecho. Redáctalo siguiendo la estructura de '
+            '"Modo análisis profundo" de tus instrucciones, citando las cifras del campo '
+            '"evidencia" de cada patrón/anomalía/hipótesis integradas en prosa fluida.'
         )
 
     if excel_auto:
-        prompt_red += f'\n\n### Nota de datos completos\nLa consulta devolvio {total_filas} filas en total. Se muestran las primeras 50 para la respuesta. El archivo completo se ha exportado a Excel: {ruta_excel}\nIncluir en la respuesta: "Mostrando las primeras 50 de {total_filas} filas. El listado completo se exportó a Excel en: {ruta_excel}"'
+        prompt_red += f'\n\n### Nota de datos completos\nLa consulta devolvio {total_filas} filas en total. Arriba se muestra una muestra representativa (no necesariamente las primeras) para la respuesta. El archivo completo se ha exportado a Excel: {ruta_excel}\nIncluir en la respuesta: "Mostrando una muestra representativa de {total_filas} filas totales. El listado completo se exportó a Excel en: {ruta_excel}"'
     if tabla_markdown:
         prompt_red += '\n\n### Tabla de Resultados\n' + tabla_markdown + '\n\nPor favor, incluir esta tabla en la respuesta.'
     if imagenes_chat:

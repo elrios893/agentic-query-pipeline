@@ -51,19 +51,29 @@ WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
 GROUP BY 1
 ORDER BY 2 DESC;
 
--- Comparar 2025 vs 2026 por GRUPO normalizado
-SELECT "Año",
-       TRIM("GRUPO_NORM") AS "Grupo",
-       SUM("CANTIDAD") AS "Unidades"
+-- Comparar año en curso vs año anterior por GRUPO normalizado.
+-- NUNCA compares el año en curso completo contra un año anterior completo
+-- (el en curso tiene menos días de datos — comparación falsa). Usa el MISMO
+-- rango de fechas en ambos años: ver bloque "Comparaciones año en curso vs
+-- año histórico" en el Contexto temporal para las fechas exactas del día de
+-- hoy — este es solo el patrón, no copiar los años/fechas literales:
+SELECT
+    TRIM("GRUPO_NORM") AS "Grupo",
+    SUM(CASE WHEN "Año" = 2026 AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')
+             BETWEEN '2026-01-01' AND '<fin_rango_actual del Contexto temporal>'
+             THEN "CANTIDAD" ELSE 0 END) AS "Unidades_2026_a_la_fecha",
+    SUM(CASE WHEN "Año" = 2025 AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')
+             BETWEEN '2025-01-01' AND '<fin_rango_anterior del Contexto temporal>'
+             THEN "CANTIDAD" ELSE 0 END) AS "Unidades_2025_mismo_rango"
 FROM ventas_unificada
 WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
-GROUP BY 1, 2
-ORDER BY 2, 1;
+GROUP BY 1
+ORDER BY 2 DESC;
 ```
 
 ### Contexto temporal
-- **Hoy es {fecha_actual}.**
-- Cuando el usuario mencione un día o mes sin especificar año, **siempre asume 2026** y usa `ventas_2026`.
+- La fecha de hoy y las reglas de comparación año-en-curso-vs-histórico se inyectan dinámicamente más abajo, en las "Reglas adicionales obligatorias" (sección con la fecha real del sistema) — usa esas fechas exactas, no un valor fijo.
+- Cuando el usuario mencione un día o mes sin especificar año, usa el año en curso indicado en esa sección con `ventas_unificada` (tabla preferida por defecto — ver arriba).
 
 ### Reglas obligatorias
 

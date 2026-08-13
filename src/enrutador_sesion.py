@@ -18,6 +18,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+try:
+    from tools.tool_pandas import catalogo_para_llm as _catalogo_tool_pandas
+except Exception:
+    _catalogo_tool_pandas = None
+
 # ---------------------------------------------------------------------------
 # Cliente Groq para clasificación (modelo ligero, separado del LLM principal)
 # ---------------------------------------------------------------------------
@@ -79,12 +84,15 @@ Formato de respuesta:
 
 Si la ruta es SOBRE_DATOS, incluir también:
   "df_relevante": "df_1"  (nombre del df que contiene los datos necesarios)
-  "operacion_sugerida": "porcentaje_de_total"  (operación de tool_pandas)
-  "parametros_sugeridos": {"col_filtro": "DEPARTAMENTO", "valor": "BOGOTA", "col_valor": "valor_cop"}
+  "operacion_sugerida": el nombre EXACTO de una operación de la lista de abajo — nunca inventes un nombre
+  "parametros_sugeridos": los parámetros de esa operación, con los nombres de columna reales del df_relevante
 
 Si la ruta es REFINAMIENTO, incluir:
   "contexto_sql": breve descripción de qué ajuste necesita el SQL anterior
 """
+
+if _catalogo_tool_pandas is not None:
+    SYSTEM_ENRUTADOR += '\n\n' + _catalogo_tool_pandas()
 
 
 def clasificar(

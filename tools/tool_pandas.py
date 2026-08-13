@@ -160,6 +160,28 @@ def _suma_por_grupo(df: pd.DataFrame, p: dict) -> dict:
     return _ok('suma_por_grupo', rows, desc)
 
 
+def _mascara_valor(serie: pd.Series, valor) -> pd.Series:
+    """
+    Máscara booleana para filtrar una columna categórica por 'valor'.
+    Coincidencia exacta primero (case-sensitive); si no hay ninguna fila,
+    cae a case-insensitive y luego a "contiene" — las categorías del
+    negocio suelen llevar un prefijo numérico (ej. "02 - Camiseta manga
+    corta") que el LLM que sugiere el filtro no siempre reproduce.
+    """
+    serie_str = serie.astype(str).str.strip()
+    valor_str = str(valor).strip()
+
+    exacta = serie_str == valor_str
+    if exacta.any():
+        return exacta
+
+    insensible = serie_str.str.casefold() == valor_str.casefold()
+    if insensible.any():
+        return insensible
+
+    return serie_str.str.casefold().str.contains(valor_str.casefold(), regex=False, na=False)
+
+
 def _porcentaje_de_total(df: pd.DataFrame, p: dict) -> dict:
     col_filtro = _req(p, 'col_filtro')
     valor      = _req(p, 'valor')
@@ -168,7 +190,7 @@ def _porcentaje_de_total(df: pd.DataFrame, p: dict) -> dict:
     _validar_col(df, col_valor)
 
     total     = float(df[col_valor].sum())
-    subtotal  = float(df[df[col_filtro].astype(str).str.strip() == str(valor)][col_valor].sum())
+    subtotal  = float(df[_mascara_valor(df[col_filtro], valor)][col_valor].sum())
 
     if total == 0:
         return _error('Total es 0, no se puede calcular porcentaje.')
@@ -215,7 +237,7 @@ def _filtrar_y_sumar(df: pd.DataFrame, p: dict) -> dict:
     col_valor  = _req(p, 'col_valor')
     _validar_col(df, col_filtro)
     _validar_col(df, col_valor)
-    filtrado = df[df[col_filtro].astype(str).str.strip() == str(valor)]
+    filtrado = df[_mascara_valor(df[col_filtro], valor)]
     total    = float(filtrado[col_valor].sum())
     return _ok(
         'filtrar_y_sumar',
@@ -228,7 +250,7 @@ def _filtrar_y_contar(df: pd.DataFrame, p: dict) -> dict:
     col_filtro = _req(p, 'col_filtro')
     valor      = _req(p, 'valor')
     _validar_col(df, col_filtro)
-    filtrado = df[df[col_filtro].astype(str).str.strip() == str(valor)]
+    filtrado = df[_mascara_valor(df[col_filtro], valor)]
     n = len(filtrado)
     return _ok(
         'filtrar_y_contar',
@@ -291,8 +313,8 @@ def _comparar_dos_valores(df: pd.DataFrame, p: dict) -> dict:
     _validar_col(df, col_filtro)
     _validar_col(df, col_valor)
 
-    fila_a = df[df[col_filtro].astype(str).str.strip() == str(valor_a)]
-    fila_b = df[df[col_filtro].astype(str).str.strip() == str(valor_b)]
+    fila_a = df[_mascara_valor(df[col_filtro], valor_a)]
+    fila_b = df[_mascara_valor(df[col_filtro], valor_b)]
 
     total_a = float(fila_a[col_valor].sum()) if not fila_a.empty else 0.0
     total_b = float(fila_b[col_valor].sum()) if not fila_b.empty else 0.0
@@ -342,7 +364,10 @@ def _suma_condicional(df: pd.DataFrame, p: dict) -> dict:
     if not isinstance(valores, list):
         valores = [valores]
 
-    filtrado = df[df[col_filtro].astype(str).str.strip().isin([str(v) for v in valores])]
+    mascara = pd.Series(False, index=df.index)
+    for v in valores:
+        mascara |= _mascara_valor(df[col_filtro], v)
+    filtrado = df[mascara]
     total    = float(filtrado[col_valor].sum())
     return _ok(
         'suma_condicional',

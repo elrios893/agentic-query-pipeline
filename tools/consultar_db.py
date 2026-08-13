@@ -10,6 +10,8 @@ import os
 import json
 import psycopg2
 import re
+import decimal
+import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -55,6 +57,19 @@ def is_read_only(query: str) -> bool:
             return False
     return True
 
+def _serializar_celda(cell):
+    """Preserva tipos numéricos nativos (int/float/bool) para que el resto
+    del pipeline (métricas, formateo de tablas) pueda operar sobre ellos en
+    vez de recibir todo como string. Decimal -> float; fechas/otros -> str."""
+    if cell is None or isinstance(cell, (bool, int, float)):
+        return cell
+    if isinstance(cell, decimal.Decimal):
+        return float(cell)
+    if isinstance(cell, (datetime.date, datetime.datetime)):
+        return cell.isoformat()
+    return str(cell)
+
+
 def execute_query(query: str, limit: int = None) -> dict:
     if not is_read_only(query):
         return {
@@ -78,7 +93,7 @@ def execute_query(query: str, limit: int = None) -> dict:
             result = {
                 'success': True,
                 'columns': columns,
-                'rows': [[str(cell) if cell is not None else None for cell in row] for row in rows],
+                'rows': [[_serializar_celda(cell) for cell in row] for row in rows],
                 'total_filas': len(rows),
             }
         else:

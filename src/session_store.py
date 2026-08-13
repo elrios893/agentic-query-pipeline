@@ -71,6 +71,89 @@ class Sesion:
 
 
 # ---------------------------------------------------------------------------
+# Digest completo — para el modo conversacional (Fase 4.1)
+# ---------------------------------------------------------------------------
+
+def _digest_completo(df: pd.DataFrame) -> dict:
+    """
+    Digest sobre TODAS las filas del DataFrame (no una muestra) para que el
+    modo conversacional pueda citar cifras concretas sin recibir las filas
+    crudas. Cuesta ~300 tokens sea el df de 50 o de 1000 filas.
+
+    Reutiliza pre_computar_metricas (totales, min/max, concentración top-10,
+    variaciones %, tendencia, outliers) y añade lo que ese cálculo no cubre:
+    cola (bottom-5), nulos/ceros, cardinalidad categórica y cuartiles.
+    """
+    if df is None or df.empty:
+        return {}
+
+    from src.orquestador import pre_computar_metricas
+
+    columnas = df.columns.tolist()
+    # .astype(object) es necesario: en una columna float, .where(..., None)
+    # sola no reemplaza NaN por None porque pandas preserva el dtype float
+    # (que no puede representar None) y el NaN sobrevive silenciosamente.
+    filas = df.astype(object).where(pd.notna(df), None).values.tolist()
+    digest = pre_computar_metricas({'columns': columnas, 'rows': filas})
+
+    cols_num = df.select_dtypes(include='number').columns.tolist()
+    cols_cat = df.select_dtypes(include='object').columns.tolist()
+
+    # Cola: las filas con menor valor — pre_computar_metricas solo da el top-10.
+    # Etiqueta compuesta con TODAS las columnas categóricas (no solo la
+    # primera), para no perder de vista, ej., cuál categoría dentro de una
+    # zona es la que casi no vende.
+    if cols_cat and cols_num:
+        bottom = {}
+        for col in cols_num[:3]:
+            peores = df.nsmallest(5, col)[cols_cat + [col]]
+            bottom[col] = [
+                {
+                    'categoria': ' / '.join(str(row[c]).strip() for c in cols_cat if str(row[c]).strip()),
+                    'valor':     round(float(row[col]), 2),
+                }
+                for _, row in peores.iterrows()
+            ]
+        if bottom:
+            digest['bottom_5'] = bottom
+
+    # Nulos y ceros por columna
+    nulos_ceros = {}
+    for col in columnas:
+        nulos = int(df[col].isna().sum())
+        ceros = int((df[col] == 0).sum()) if col in cols_num else 0
+        if nulos or ceros:
+            nulos_ceros[col] = {'nulos': nulos, 'ceros': ceros}
+    if nulos_ceros:
+        digest['nulos_y_ceros'] = nulos_ceros
+
+    # Cardinalidad de columnas categóricas (con los valores si son pocos)
+    cardinalidad = {}
+    for col in cols_cat:
+        n_unicos = int(df[col].nunique())
+        entrada = {'valores_unicos': n_unicos}
+        if n_unicos <= 15:
+            entrada['valores'] = sorted(str(v) for v in df[col].dropna().unique())
+        cardinalidad[col] = entrada
+    if cardinalidad:
+        digest['cardinalidad'] = cardinalidad
+
+    # Cuartiles de columnas numéricas
+    cuartiles = {}
+    for col in cols_num[:3]:
+        q = df[col].quantile([0.25, 0.5, 0.75])
+        cuartiles[col] = {
+            'q1':      round(float(q[0.25]), 2),
+            'mediana': round(float(q[0.5]), 2),
+            'q3':      round(float(q[0.75]), 2),
+        }
+    if cuartiles:
+        digest['cuartiles'] = cuartiles
+
+    return digest
+
+
+# ---------------------------------------------------------------------------
 # SessionStore
 # ---------------------------------------------------------------------------
 
@@ -314,6 +397,22 @@ class SessionStore:
             'dataframes_activos': dfs_dict,
             'turno_actual':       sesion.turno_actual,
         }
+
+    # ------------------------------------------------------------------
+    # Digest completo (para el modo conversacional)
+    # ------------------------------------------------------------------
+
+    def calcular_digest(self, session_id: str, nombre: str) -> dict:
+        """
+        Digest estadístico sobre TODAS las filas del df (no una muestra) —
+        a diferencia de contexto_para_llm(), que solo da metadata. Se calcula
+        bajo demanda (no en cada turno) porque es más caro que _calcular_metricas.
+        """
+        entrada = self.obtener_df(session_id, nombre)
+        if not entrada:
+            return {}
+        _, df = entrada
+        return _digest_completo(df)
 
     # ------------------------------------------------------------------
     # Métricas comprimidas

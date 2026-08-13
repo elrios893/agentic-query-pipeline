@@ -49,8 +49,9 @@ from src.orquestador import (
     es_intencion_informe,
     es_intencion_busqueda_web,
     llamar_llm,
-    leer_instrucciones,
+    cargar_system_prompt,
     _reglas_gen,
+    _es_comando_analisis,
 )
 from src.prompt_logger import registrar_prompt, actualizar_feedback
 from tools.tool_pandas import ejecutar_operacion, catalogo_para_llm
@@ -123,7 +124,20 @@ def chat(req: ChatRequest):
     # ------------------------------------------------------------------
     # 1. Enrutar el mensaje
     # ------------------------------------------------------------------
-    clasificacion = clasificar(pregunta, contexto)
+    # El comando /analisis se detecta ANTES del enrutador: el enrutador es
+    # un clasificador LLM ligero que no conoce esta sintaxis y, con historial
+    # de sesión, puede leer "/analisis por qué..." como una pregunta
+    # conceptual y mandarla a CONVERSACIONAL — donde el comando nunca se
+    # ejecuta como análisis profundo.
+    if _es_comando_analisis(pregunta)[0]:
+        clasificacion = {
+            'ruta': 'NUEVA_CONSULTA', 'confianza': 'alta',
+            'razon': 'Comando /analisis explícito.',
+            'df_relevante': None, 'operacion_sugerida': None,
+            'parametros_sugeridos': None, 'contexto_sql': None,
+        }
+    else:
+        clasificacion = clasificar(pregunta, contexto)
     ruta = clasificacion['ruta']
     print(f'[SERVER] ruta: {ruta}')
 
@@ -163,20 +177,7 @@ def chat(req: ChatRequest):
             resultado_sql = resultado.get('resultado_sql')
             sql_usada     = resultado.get('sql_usada', '')
             sql_queries   = resultado.get('sql_queries', [])
-
-            # Crear DataFrame en sesión si hay resultado SQL válido
-            if resultado_sql and resultado_sql.get('success') and resultado_sql.get('rows'):
-                df_creado_nom = store.siguiente_nombre_df(session_id)
-                df = _resultado_a_df(resultado_sql)
-                descripcion = _inferir_descripcion(pregunta, resultado_sql)
-                store.crear_df(
-                    session_id=session_id,
-                    nombre=df_creado_nom,
-                    df=df,
-                    descripcion=descripcion,
-                    sql_original=sql_usada or '',
-                )
-                print(f'[SERVER] DataFrame creado: {df_creado_nom} ({len(df)} filas)')
+            df_creado_nom = _crear_df_si_aplica(session_id, pregunta, resultado_sql, sql_usada)
 
         elif ruta == 'SOBRE_DATOS':
             # ----------------------------------------------------------------
@@ -188,10 +189,24 @@ def chat(req: ChatRequest):
 
         elif ruta == 'CONVERSACIONAL':
             # ----------------------------------------------------------------
-            # Respuesta directa con el LLM usando el historial como contexto
+            # Respuesta directa con el LLM usando historial + digest del df
+            # activo. Puede escalar a una consulta SQL nueva si le hace falta
+            # un dato que no está en sesión (ver _manejar_conversacional).
             # ----------------------------------------------------------------
-            respuesta_txt = _manejar_conversacional(pregunta, contexto)
-            tipo = 'conversacional'
+            resultado_conv = _manejar_conversacional(pregunta, contexto, session_id)
+            if resultado_conv['escalado']:
+                resultado     = resultado_conv['resultado']
+                tipo          = resultado.get('tipo', 'consulta')
+                respuesta_txt = resultado.get('respuesta', '')
+                imagenes      = resultado.get('imagenes', [])
+                ruta_excel    = resultado.get('ruta_excel', '')
+                resultado_sql = resultado.get('resultado_sql')
+                sql_usada     = resultado.get('sql_usada', '')
+                sql_queries   = resultado.get('sql_queries', [])
+                df_creado_nom = _crear_df_si_aplica(session_id, pregunta, resultado_sql, sql_usada)
+            else:
+                respuesta_txt = resultado_conv['respuesta']
+                tipo = 'conversacional'
     except Exception as e:
         duracion_error = round(time.time() - t_inicio, 2)
         print(f'[SERVER] ERROR: {e}')
@@ -340,6 +355,30 @@ def _resultado_a_df(resultado_sql: dict) -> pd.DataFrame:
     return df
 
 
+def _crear_df_si_aplica(
+    session_id: str,
+    pregunta: str,
+    resultado_sql: dict | None,
+    sql_usada: str,
+) -> str | None:
+    """Crea un DataFrame en sesión si resultado_sql es válido. Compartido por
+    NUEVA_CONSULTA/REFINAMIENTO y por CONVERSACIONAL cuando escala a SQL."""
+    if not (resultado_sql and resultado_sql.get('success') and resultado_sql.get('rows')):
+        return None
+    df_creado_nom = store.siguiente_nombre_df(session_id)
+    df = _resultado_a_df(resultado_sql)
+    descripcion = _inferir_descripcion(pregunta, resultado_sql)
+    store.crear_df(
+        session_id=session_id,
+        nombre=df_creado_nom,
+        df=df,
+        descripcion=descripcion,
+        sql_original=sql_usada or '',
+    )
+    print(f'[SERVER] DataFrame creado: {df_creado_nom} ({len(df)} filas)')
+    return df_creado_nom
+
+
 def _construir_contexto_refinamiento(session_id: str, clasificacion: dict) -> dict | None:
     """
     Construye el dict de contexto para REFINAMIENTO a partir del último df activo.
@@ -440,14 +479,10 @@ def _consulta_adicional_sobre_datos(
     Devuelve (resultado, sql) — sql viene vacío si no se llegó a generar/ejecutar.
     """
     from src.orquestador import generar_sql_y_validar, ejecutar_consulta
-    from src.orquestador import leer_instrucciones, _reglas_gen, _reglas_val
+    from src.orquestador import _reglas_gen, _reglas_val
 
-    instrucciones_gen = leer_instrucciones('generador_consultas.md')
-    instrucciones_val = leer_instrucciones('validador.md')
-    m_gen = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_gen, re.DOTALL)
-    m_val = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_val, re.DOTALL)
-    system_gen = (m_gen.group(1).strip() if m_gen else instrucciones_gen) + _reglas_gen()
-    system_val = (m_val.group(1).strip() if m_val else instrucciones_val) + _reglas_val()
+    system_gen = cargar_system_prompt('generador_consultas.md', ['Instrucciones (system prompt)']) + _reglas_gen()
+    system_val = cargar_system_prompt('validador.md', ['Instrucciones (system prompt)']) + _reglas_val()
 
     # Enriquecer el prompt con el contexto de sesión disponible
     dfs = store.listar_dfs_activos(session_id)
@@ -480,9 +515,7 @@ def _redactar_sobre_datos(
     resultado_bd: dict | None,
 ) -> str:
     """Redacta la respuesta conversacional para SOBRE_DATOS usando el LLM."""
-    instrucciones_red = leer_instrucciones('redactor_respuesta.md')
-    m = re.search(r'## Instrucciones \(system prompt\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_red, re.DOTALL)
-    system_red = m.group(1).strip() if m else instrucciones_red
+    system_red = cargar_system_prompt('redactor_respuesta.md', ['Instrucciones (system prompt)'])
 
     historial_str = json.dumps(contexto.get('historial', []), ensure_ascii=False)
 
@@ -507,14 +540,48 @@ def _redactar_sobre_datos(
     return llamar_llm(system_red, prompt, temperatura=0.2)
 
 
-def _manejar_conversacional(pregunta: str, contexto: dict) -> str:
-    """Responde preguntas conversacionales usando el historial como contexto."""
-    instrucciones_red = leer_instrucciones('redactor_respuesta.md')
-    m = re.search(r'## Modo conversacional \(sin consulta SQL nueva\)\s*\n(.*?)(?=\n## |\Z)', instrucciones_red, re.DOTALL)
-    system_red = m.group(1).strip() if m else instrucciones_red
+_MARCADOR_CALCULAR = '[[CALCULAR]]'
+_MARCADOR_ESCALAR  = '[[ESCALAR_A_CONSULTA]]'
+
+
+def _manejar_conversacional(pregunta: str, contexto: dict, session_id: str) -> dict:
+    """
+    Responde preguntas conversacionales usando el historial + un digest
+    estadístico sobre TODAS las filas del df activo (no solo metadata).
+
+    Si el redactor determina que le falta un cálculo exacto sobre el df, o
+    directamente datos que no están en sesión, responde con un marcador en
+    vez de pedirle al usuario que repregunte:
+      - [[CALCULAR]] {"operacion": "...", "parametros": {...}}  → se ejecuta
+        con tool_pandas sobre el df completo y se re-redacta con el resultado.
+      - [[ESCALAR_A_CONSULTA]] <pregunta reformulada>  → se dispara el
+        pipeline de consulta SQL completo (procesar_consulta).
+
+    Retorna:
+      {'escalado': False, 'respuesta': str}
+      {'escalado': True, 'resultado': dict}   # dict de procesar_consulta
+    """
+    system_red = cargar_system_prompt(
+        'redactor_respuesta.md',
+        ['Instrucciones (system prompt)', 'Modo conversacional (sin consulta SQL nueva)'],
+    )
+    system_red += '\n\n' + catalogo_para_llm()
 
     historial_str = json.dumps(contexto.get('historial', []), ensure_ascii=False)
     dfs_str       = json.dumps(contexto.get('dataframes_activos', []), ensure_ascii=False)
+
+    digest_str  = ''
+    df_reciente = None
+    dfs_meta = store.listar_dfs_activos(session_id)
+    if dfs_meta:
+        df_reciente = max(dfs_meta, key=lambda m: m.turno_creado)
+        digest = store.calcular_digest(session_id, df_reciente.nombre)
+        if digest:
+            digest_str = (
+                f'\n\nDigest estadístico completo de "{df_reciente.nombre}" '
+                f'(sobre las {df_reciente.total_filas} filas reales, no una muestra):\n'
+                f'{json.dumps(digest, ensure_ascii=False, indent=2)}\n'
+            )
 
     bloque_web = ''
     necesita_web = es_intencion_busqueda_web(pregunta)
@@ -540,11 +607,46 @@ def _manejar_conversacional(pregunta: str, contexto: dict) -> str:
     prompt = (
         f'El usuario dice: "{pregunta}"\n\n'
         f'Contexto de la sesión (últimos turnos):\n{historial_str}\n\n'
-        f'Datos disponibles en memoria:\n{dfs_str}\n'
+        f'Datos disponibles en memoria (metadata):\n{dfs_str}\n'
+        f'{digest_str}'
         f'{bloque_web}\n'
         f'Responde siguiendo las reglas del modo conversacional.'
     )
-    return llamar_llm(system_red, prompt, temperatura=0.4)
+    respuesta_llm = llamar_llm(system_red, prompt, temperatura=0.4).strip()
+
+    if respuesta_llm.startswith(_MARCADOR_ESCALAR):
+        pregunta_efectiva = respuesta_llm[len(_MARCADOR_ESCALAR):].strip() or pregunta
+        print(f'[CONVERSACIONAL] Escalando a consulta SQL: "{pregunta_efectiva}"')
+        resultado = procesar_consulta(pregunta_efectiva)
+        return {'escalado': True, 'resultado': resultado}
+
+    if respuesta_llm.startswith(_MARCADOR_CALCULAR) and df_reciente:
+        cuerpo = respuesta_llm[len(_MARCADOR_CALCULAR):].strip()
+        try:
+            peticion = json.loads(cuerpo)
+        except json.JSONDecodeError:
+            peticion = None
+        entrada_df = store.obtener_df(session_id, df_reciente.nombre) if peticion else None
+        if entrada_df:
+            _, df_real = entrada_df
+            print(f'[CONVERSACIONAL] Calculando: {peticion.get("operacion")} {peticion.get("parametros")}')
+            resultado_calc = ejecutar_operacion(
+                df_real, peticion.get('operacion', ''), peticion.get('parametros', {}) or {}
+            )
+            if resultado_calc.get('exito'):
+                prompt_final = (
+                    f'El usuario dice: "{pregunta}"\n\n'
+                    f'Pediste calcular "{peticion.get("operacion")}" sobre "{df_reciente.nombre}" '
+                    f'y el resultado exacto es:\n{resultado_calc.get("descripcion")}\n\n'
+                    f'Redacta la respuesta final usando este resultado exacto, siguiendo las '
+                    f'reglas del modo conversacional. No uses marcadores esta vez.'
+                )
+                return {'escalado': False, 'respuesta': llamar_llm(system_red, prompt_final, temperatura=0.3)}
+            print(f'[CONVERSACIONAL] Cálculo falló: {resultado_calc.get("error")} — escalando a consulta SQL')
+            resultado = procesar_consulta(pregunta)
+            return {'escalado': True, 'resultado': resultado}
+
+    return {'escalado': False, 'respuesta': respuesta_llm}
 
 
 def _generar_query_busqueda_web(pregunta: str, contexto: dict) -> str:
