@@ -9,7 +9,7 @@ Rutas:
   SOBRE_DATOS      — pregunta sobre resultados ya en memoria, puede responder con Pandas
   CONVERSACIONAL   — respuesta directa sin BD ni Pandas
 
-Usa llama-3.1-8b-instant vía Groq (mismo cliente que el clasificador de analista).
+Usa openai/gpt-oss-20b vía Groq (mismo cliente que el clasificador de analista).
 """
 import json
 import os
@@ -29,7 +29,7 @@ except Exception:
 try:
     from groq import Groq as _GroqClass
     _client_router = _GroqClass(api_key=os.getenv('GROQ_API_KEY'))
-    MODELO_ROUTER   = os.getenv('GROQ_MODEL_INFERENCE', 'llama-3.1-8b-instant')
+    MODELO_ROUTER   = os.getenv('GROQ_MODEL_INFERENCE', 'openai/gpt-oss-20b')
 except Exception:
     _client_router = None
     MODELO_ROUTER   = None
@@ -38,6 +38,29 @@ except Exception:
 # Rutas posibles
 # ---------------------------------------------------------------------------
 RUTAS = ('NUEVA_CONSULTA', 'REFINAMIENTO', 'SOBRE_DATOS', 'CONVERSACIONAL')
+
+# ---------------------------------------------------------------------------
+# Saludo / chit-chat sin intención de datos — se detecta por regex, sin
+# gastar una llamada al LLM. Solo se usa como primer mensaje de la sesión
+# (ver "Sin historial" en clasificar()): antes, cualquier primer mensaje se
+# forzaba a NUEVA_CONSULTA sin mirar el contenido, y un saludo terminaba
+# forzando al generador de SQL a inventar una consulta sobre "hola", lo que
+# rompía el pipeline (el validador lo rechazaba y agotaba los reintentos).
+# Anclado a todo el mensaje (con puntuación/espacios al final tolerados)
+# para no atrapar mensajes reales que solo empiezan con un saludo
+# ("hola, dame las ventas de marzo" NO matchea).
+# ---------------------------------------------------------------------------
+PATRON_SALUDO = re.compile(
+    r'^\s*('
+    r'hola+|buenas|buenos?\s+d[ií]as?|buenas\s+tardes|buenas\s+noches|'
+    r'hey|hi|hello|qu[eé]\s+tal|c[oó]mo\s+(est[aá]s|vas|andas)|saludos|'
+    r'oye|holi|'
+    r'gracias|muchas\s+gracias|listo|vale|perfecto|entendido|'
+    r'ad[ií]os|chao|hasta\s+luego|nos\s+vemos|'
+    r'qui[eé]n\s+eres|qu[eé]\s+(eres|puedes\s+hacer)|c[oó]mo\s+funcionas'
+    r')[\s!.,¡¿?]*$',
+    re.IGNORECASE,
+)
 
 SYSTEM_ENRUTADOR = """Eres un clasificador de intención conversacional para un sistema de análisis de ventas retail.
 
@@ -119,8 +142,20 @@ def clasificar(
     """
     hay_historial = bool(contexto_sesion.get('historial'))
 
-    # Sin historial → siempre NUEVA_CONSULTA, sin llamar al LLM
+    # Sin historial → normalmente NUEVA_CONSULTA, sin llamar al LLM. Excepto
+    # si es un saludo/chit-chat (ver PATRON_SALUDO arriba), que va directo a
+    # CONVERSACIONAL — también sin llamar al LLM.
     if not hay_historial:
+        if PATRON_SALUDO.match(pregunta.strip()):
+            return {
+                'ruta':                  'CONVERSACIONAL',
+                'confianza':             'alta',
+                'razon':                 'Saludo o mensaje sin intención de datos (regex, primer mensaje).',
+                'df_relevante':          None,
+                'operacion_sugerida':    None,
+                'parametros_sugeridos':  None,
+                'contexto_sql':          None,
+            }
         return {
             'ruta':                  'NUEVA_CONSULTA',
             'confianza':             'alta',
@@ -146,7 +181,8 @@ def clasificar(
                 {'role': 'user',   'content': prompt},
             ],
             temperature=0.0,
-            max_tokens=300,
+            max_tokens=600,
+            reasoning_effort='low',
         )
         texto = resp.choices[0].message.content.strip()
         resultado = _parsear_respuesta(texto)

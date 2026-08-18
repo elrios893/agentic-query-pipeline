@@ -1593,7 +1593,8 @@ def _clasificar_intencion_llm(pregunta: str) -> bool:
                 {'role': 'user',   'content': pregunta},
             ],
             temperature=0.0,
-            max_tokens=5,
+            max_tokens=300,
+            reasoning_effort='low',
         )
         resultado = resp.choices[0].message.content.strip().upper()
         print(f'  [clasificador LLM] respuesta: {resultado}')
