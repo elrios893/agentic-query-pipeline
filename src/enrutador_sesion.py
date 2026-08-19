@@ -20,8 +20,10 @@ load_dotenv()
 
 try:
     from tools.tool_pandas import catalogo_para_llm as _catalogo_tool_pandas
+    from tools.tool_pandas import OPERACIONES_DISPONIBLES as _OPERACIONES
 except Exception:
     _catalogo_tool_pandas = None
+    _OPERACIONES = {}
 
 # ---------------------------------------------------------------------------
 # Cliente Groq para clasificación (modelo ligero, separado del LLM principal)
@@ -117,6 +119,72 @@ Si la ruta es REFINAMIENTO, incluir:
 if _catalogo_tool_pandas is not None:
     SYSTEM_ENRUTADOR += '\n\n' + _catalogo_tool_pandas()
 
+# ---------------------------------------------------------------------------
+# JSON Schema (structured outputs, modo strict) — le exige a Groq que la
+# salida sea JSON válido con esta forma exacta, en vez de confiar solo en la
+# instrucción del prompt. Con esto el bloque try/except de _parsear_respuesta
+# queda como red de seguridad, no como el camino normal: antes, con
+# gpt-oss-20b (modelo de razonamiento, canal de "thinking" en inglés) las
+# preguntas de refinamiento —las más ambiguas de clasificar— a veces gastaban
+# el presupuesto de max_tokens en el razonamiento interno y truncaban el JSON
+# final, cayendo en "no se pudo parsear" y perdiendo el contexto del turno.
+# Todos los campos van "required" (constraint de modo strict); los opcionales
+# se marcan nullable con ["tipo", "null"] en vez de omitirlos.
+# ---------------------------------------------------------------------------
+_PARAM_STRING = {'type': ['string', 'null']}
+_PARAM_STRING_O_NUM = {'type': ['string', 'number', 'null']}
+
+_JSON_SCHEMA_ENRUTADOR = {
+    'name': 'clasificacion_enrutador',
+    'strict': True,
+    'schema': {
+        'type': 'object',
+        'additionalProperties': False,
+        'required': [
+            'ruta', 'confianza', 'razon', 'df_relevante',
+            'operacion_sugerida', 'parametros_sugeridos', 'contexto_sql',
+        ],
+        'properties': {
+            'ruta':      {'type': 'string', 'enum': list(RUTAS)},
+            'confianza': {'type': 'string', 'enum': ['alta', 'media', 'baja']},
+            'razon':     {'type': 'string'},
+            'df_relevante': {'type': ['string', 'null']},
+            'operacion_sugerida': {
+                'type': ['string', 'null'],
+                'enum': list(_OPERACIONES.keys()) + [None],
+            },
+            'contexto_sql': {'type': ['string', 'null']},
+            'parametros_sugeridos': {
+                'type': ['object', 'null'],
+                'additionalProperties': False,
+                'required': [
+                    'col_valor', 'col_grupo', 'col_filtro', 'valor', 'valores',
+                    'n', 'valor_nuevo', 'valor_anterior', 'col_peso',
+                    'valor_a', 'valor_b', 'col_a', 'col_b',
+                ],
+                'properties': {
+                    'col_valor':      _PARAM_STRING,
+                    'col_grupo':      _PARAM_STRING,
+                    'col_filtro':     _PARAM_STRING,
+                    'valor':          _PARAM_STRING_O_NUM,
+                    'valores':        {
+                        'type': ['array', 'null'],
+                        'items': {'type': ['string', 'number']},
+                    },
+                    'n':              {'type': ['integer', 'null']},
+                    'valor_nuevo':    {'type': ['number', 'null']},
+                    'valor_anterior': {'type': ['number', 'null']},
+                    'col_peso':       _PARAM_STRING,
+                    'valor_a':        _PARAM_STRING_O_NUM,
+                    'valor_b':        _PARAM_STRING_O_NUM,
+                    'col_a':          _PARAM_STRING,
+                    'col_b':          _PARAM_STRING,
+                },
+            },
+        },
+    },
+}
+
 
 def clasificar(
     pregunta: str,
@@ -181,8 +249,12 @@ def clasificar(
                 {'role': 'user',   'content': prompt},
             ],
             temperature=0.0,
-            max_tokens=600,
+            max_tokens=1200,
             reasoning_effort='low',
+            response_format={
+                'type': 'json_schema',
+                'json_schema': _JSON_SCHEMA_ENRUTADOR,
+            },
         )
         texto = resp.choices[0].message.content.strip()
         resultado = _parsear_respuesta(texto)
