@@ -104,7 +104,8 @@ Formato de respuesta:
   "razon": "El usuario pide datos nuevos sobre marzo, sin referencia a resultados anteriores.",
   "df_relevante": null,
   "operacion_sugerida": null,
-  "parametros_sugeridos": null
+  "parametros_sugeridos": null,
+  "sub_preguntas": null
 }
 
 Si la ruta es SOBRE_DATOS, incluir también:
@@ -114,6 +115,25 @@ Si la ruta es SOBRE_DATOS, incluir también:
 
 Si la ruta es REFINAMIENTO, incluir:
   "contexto_sql": breve descripción de qué ajuste necesita el SQL anterior
+
+DETECCIÓN DE MÚLTIPLES CONSULTAS (sub_preguntas):
+  El pipeline SQL genera UNA sola tabla por consulta. Si el mensaje pide, en un
+  mismo turno, dos o más resultados que NO caben en una sola tabla porque tienen
+  dimensiones, agrupaciones o filtros distintos entre sí (ej: "dame una tabla de
+  las referencias con más ventas y otra tabla de las tiendas con más ventas en
+  Antioquia"), NO intentes resolverlo en una sola consulta ni elijas solo una
+  parte: descompón el mensaje en sub-preguntas independientes.
+  - "sub_preguntas": lista de strings, cada uno una pregunta autocontenida y
+    completa (reescrita para poder enviarse sola al generador SQL, sin depender
+    de las demás) — incluye en cada una el filtro/contexto que le corresponda
+    específicamente (ej: el filtro "en Antioquia" va SOLO en la sub-pregunta de
+    tiendas, no en la de referencias).
+  - Si detectas sub_preguntas, "ruta" sigue siendo NUEVA_CONSULTA o REFINAMIENTO
+    según corresponda (sub_preguntas es independiente de la ruta).
+  - NO uses sub_preguntas para una sola pregunta con múltiples cláusulas que SÍ
+    caben en una tabla (ej: "ventas por tienda y por línea" puede ser ambiguo,
+    pero "top 5 tiendas de Bogotá" con un solo filtro NO se separa).
+  - Si solo hay una intención, "sub_preguntas" es null.
 """
 
 if _catalogo_tool_pandas is not None:
@@ -136,19 +156,29 @@ _PARAM_STRING_O_NUM = {'type': ['string', 'number', 'null']}
 
 _JSON_SCHEMA_ENRUTADOR = {
     'name': 'clasificacion_enrutador',
-    'strict': True,
+    # best-effort (no strict): con 'strict': True, Groq RECHAZA la respuesta
+    # completa (error 400, sin reintento) si el modelo omite una clave nullable
+    # en 'parametros_sugeridos' en vez de mandarla en null — se vio en pruebas
+    # con SOBRE_DATOS y forzaba el fallback a regex, perdiendo la clasificación
+    # real del LLM. best-effort sigue guiando la forma del JSON sin rechazar.
+    'strict': False,
     'schema': {
         'type': 'object',
         'additionalProperties': False,
         'required': [
             'ruta', 'confianza', 'razon', 'df_relevante',
             'operacion_sugerida', 'parametros_sugeridos', 'contexto_sql',
+            'sub_preguntas',
         ],
         'properties': {
             'ruta':      {'type': 'string', 'enum': list(RUTAS)},
             'confianza': {'type': 'string', 'enum': ['alta', 'media', 'baja']},
             'razon':     {'type': 'string'},
             'df_relevante': {'type': ['string', 'null']},
+            'sub_preguntas': {
+                'type': ['array', 'null'],
+                'items': {'type': 'string'},
+            },
             'operacion_sugerida': {
                 'type': ['string', 'null'],
                 'enum': list(_OPERACIONES.keys()) + [None],
@@ -206,32 +236,32 @@ def clasificar(
           'operacion_sugerida': str | None,
           'parametros_sugeridos': dict | None,
           'contexto_sql': str | None,
+          'sub_preguntas': list[str] | None,
         }
     """
     hay_historial = bool(contexto_sesion.get('historial'))
 
-    # Sin historial → normalmente NUEVA_CONSULTA, sin llamar al LLM. Excepto
-    # si es un saludo/chit-chat (ver PATRON_SALUDO arriba), que va directo a
-    # CONVERSACIONAL — también sin llamar al LLM.
-    if not hay_historial:
-        if PATRON_SALUDO.match(pregunta.strip()):
-            return {
-                'ruta':                  'CONVERSACIONAL',
-                'confianza':             'alta',
-                'razon':                 'Saludo o mensaje sin intención de datos (regex, primer mensaje).',
-                'df_relevante':          None,
-                'operacion_sugerida':    None,
-                'parametros_sugeridos':  None,
-                'contexto_sql':          None,
-            }
+    # Sin historial y es un saludo/chit-chat (ver PATRON_SALUDO arriba) → va
+    # directo a CONVERSACIONAL sin llamar al LLM. Un saludo real jamás trae
+    # sub-preguntas (el patrón exige que TODO el mensaje sea el saludo, sin
+    # texto adicional), así que este atajo es seguro.
+    #
+    # Nota: antes, cualquier OTRO primer mensaje (no saludo) también se
+    # devolvía como NUEVA_CONSULTA fijo sin llamar al LLM — optimización que
+    # dejó de ser segura al agregar sub_preguntas: el primer mensaje de una
+    # sesión es justo donde más aparecen preguntas compuestas ("dame una
+    # tabla de X y otra de Y"), y el atajo las dejaba pasar sin detectar.
+    # Ahora ese caso cae al flujo normal de abajo, que sí llama al LLM.
+    if not hay_historial and PATRON_SALUDO.match(pregunta.strip()):
         return {
-            'ruta':                  'NUEVA_CONSULTA',
+            'ruta':                  'CONVERSACIONAL',
             'confianza':             'alta',
-            'razon':                 'Primer mensaje de la sesión.',
+            'razon':                 'Saludo o mensaje sin intención de datos (regex, primer mensaje).',
             'df_relevante':          None,
             'operacion_sugerida':    None,
             'parametros_sugeridos':  None,
             'contexto_sql':          None,
+            'sub_preguntas':         None,
         }
 
     # Si el cliente no está disponible → fallback a regex simple
@@ -328,6 +358,7 @@ def _parsear_respuesta(texto: str) -> dict:
         'operacion_sugerida':    data.get('operacion_sugerida'),
         'parametros_sugeridos':  data.get('parametros_sugeridos'),
         'contexto_sql':          data.get('contexto_sql'),
+        'sub_preguntas':         data.get('sub_preguntas') or None,
     }
 
 
@@ -380,4 +411,5 @@ def _fallback_ruta(ruta: str, razon: str) -> dict:
         'operacion_sugerida':    None,
         'parametros_sugeridos':  None,
         'contexto_sql':          None,
+        'sub_preguntas':         None,
     }

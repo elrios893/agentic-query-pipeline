@@ -135,6 +135,7 @@ def chat(req: ChatRequest):
             'razon': 'Comando /analisis explícito.',
             'df_relevante': None, 'operacion_sugerida': None,
             'parametros_sugeridos': None, 'contexto_sql': None,
+            'sub_preguntas': None,
         }
     else:
         clasificacion = clasificar(pregunta, contexto)
@@ -163,7 +164,15 @@ def chat(req: ChatRequest):
             if ruta == 'REFINAMIENTO':
                 contexto_ref = _construir_contexto_refinamiento(session_id, clasificacion)
 
-            if es_intencion_informe(pregunta):
+            sub_preguntas = clasificacion.get('sub_preguntas')
+            if sub_preguntas:
+                # El enrutador detectó varias consultas independientes en un
+                # mismo mensaje (ej. "una tabla de X y otra de Y") — cada una
+                # corre por el pipeline normal de una sola consulta en vez de
+                # forzarlas todas en una sola tabla. Ver _procesar_multi_consulta.
+                resultado = _procesar_multi_consulta(sub_preguntas, contexto_ref, session_id)
+                tipo      = 'consulta'
+            elif es_intencion_informe(pregunta):
                 resultado = generar_informe(pregunta)
                 tipo      = 'informe'
                 ruta_docx = resultado.get('ruta_docx', '')
@@ -177,7 +186,11 @@ def chat(req: ChatRequest):
             resultado_sql = resultado.get('resultado_sql')
             sql_usada     = resultado.get('sql_usada', '')
             sql_queries   = resultado.get('sql_queries', [])
-            df_creado_nom = _crear_df_si_aplica(session_id, pregunta, resultado_sql, sql_usada)
+
+            if sub_preguntas:
+                df_creado_nom = ', '.join(resultado.get('dfs_creados', [])) or None
+            else:
+                df_creado_nom = _crear_df_si_aplica(session_id, pregunta, resultado_sql, sql_usada)
 
         elif ruta == 'SOBRE_DATOS':
             # ----------------------------------------------------------------
@@ -396,6 +409,89 @@ def _construir_contexto_refinamiento(session_id: str, clasificacion: dict) -> di
         'periodo_previo':   '',
         'filtros_previos':  _extraer_filtros(df_meta.sql_original),
         'descripcion_df':   df_meta.descripcion,
+    }
+
+
+def _procesar_multi_consulta(
+    sub_preguntas: list[str],
+    contexto_ref: dict | None,
+    session_id: str,
+) -> dict:
+    """
+    Ejecuta cada sub-pregunta detectada por el enrutador (clasificacion['sub_preguntas'])
+    como una consulta independiente, una por una, por el pipeline normal de una
+    sola consulta (procesar_consulta) — en vez de forzar varios resultados en
+    una sola tabla. Cada sub-pregunta genera su propio DataFrame de sesión.
+
+    Trazabilidad: cada entrada de sql_queries queda prefijada con el número de
+    sub-consulta y su texto (ej. "sub_1/2 [top 10 productos]: consulta_principal"),
+    así el log persistido (prompts_YYYYMMDD.json) distingue de qué parte del
+    mensaje original salió cada SQL. La consola imprime lo mismo en tiempo real
+    con separadores, porque procesar_consulta ya hace print() de cada SQL que
+    genera pero SIEMPRE bajo la misma etiqueta genérica "consulta_principal" —
+    sin este encabezado, dos sub-consultas seguidas se ven indistinguibles en
+    el log de la terminal.
+
+    Limitación conocida: resultado_sql/sql_usada al final del dict quedan como
+    los de la ÚLTIMA sub-pregunta (no hay un "resultado principal" cuando hay
+    varios) — solo importan para el flujo de REFINAMIENTO de un turno futuro
+    que no especifique a cuál de los N resultados se refiere; no afecta la
+    respuesta que ve el usuario en este turno, que sí incluye las N tablas.
+    """
+    respuestas    = []
+    imagenes      = []
+    ruta_excel    = ''
+    sql_queries   = []
+    dfs_creados   = []
+    resultado_sql = None
+    sql_usada     = None
+    n = len(sub_preguntas)
+
+    print(f'[SERVER] Enrutador detectó {n} sub-consultas en el mismo mensaje:')
+    for i, sub in enumerate(sub_preguntas, start=1):
+        print(f'  {i}. {sub}')
+
+    for i, sub in enumerate(sub_preguntas, start=1):
+        print(f'\n{"-"*60}')
+        print(f'[SERVER] Sub-consulta {i}/{n}: "{sub}"')
+        print(f'{"-"*60}')
+
+        resultado = procesar_consulta(sub, contexto_refinamiento=contexto_ref)
+
+        filas = (resultado.get('resultado_sql') or {}).get('total_filas', 0)
+        print(f'[SERVER] Sub-consulta {i}/{n} completada — {filas} fila(s).')
+
+        respuestas.append(f'### {i}. {sub}\n\n{resultado.get("respuesta", "")}')
+        imagenes.extend(resultado.get('imagenes', []))
+        if not ruta_excel and resultado.get('ruta_excel'):
+            ruta_excel = resultado['ruta_excel']
+
+        for q in resultado.get('sql_queries', []):
+            sql_queries.append({
+                'nombre': f'sub_{i}/{n} [{sub}]: {q["nombre"]}',
+                'sql':    q['sql'],
+            })
+
+        df_nom = _crear_df_si_aplica(
+            session_id, sub, resultado.get('resultado_sql'), resultado.get('sql_usada', ''),
+        )
+        if df_nom:
+            dfs_creados.append(df_nom)
+
+        resultado_sql = resultado.get('resultado_sql')
+        sql_usada     = resultado.get('sql_usada')
+
+    print(f'\n[SERVER] Multi-consulta completada: {n} sub-consultas, '
+          f'{len(dfs_creados)} DataFrame(s) creado(s), {len(sql_queries)} SQL registrada(s).')
+
+    return {
+        'respuesta':     '\n\n---\n\n'.join(respuestas),
+        'imagenes':      imagenes,
+        'ruta_excel':    ruta_excel,
+        'sql_queries':   sql_queries,
+        'dfs_creados':   dfs_creados,
+        'resultado_sql': resultado_sql,
+        'sql_usada':     sql_usada,
     }
 
 
