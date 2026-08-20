@@ -2,6 +2,7 @@
 telegram_bot/handlers.py
 Manejadores de eventos del bot de Telegram
 """
+import asyncio
 import logging
 import re
 import time
@@ -334,7 +335,10 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
 
         try:
             inicio = time.time()
-            resultado = api_client.enviar_consulta(session_id, pregunta)
+            # to_thread: enviar_consulta() es un requests.post bloqueante: sin
+            # esto, ocuparia el event loop entero mientras corre (ver nota en
+            # main.py) y ningun otro usuario podria ser atendido mientras tanto.
+            resultado = await asyncio.to_thread(api_client.enviar_consulta, session_id, pregunta)
             duracion = time.time() - inicio
 
             try:
@@ -429,14 +433,16 @@ Escribe tu pregunta para comenzar {EMOJIS['search']}
         
         # Enviar mensaje de "escribiendo..."
         mensaje_espera = await update.message.reply_text(
-            f"{EMOJIS['loading']} Procesando tu consulta...\n_(Esto puede tomar unos segundos)_",
+            f"{EMOJIS['loading']} Procesando tu consulta...\n_(Puede tomar varios minutos si es un informe o un análisis — no la reenvíes)_",
             parse_mode=ParseMode.MARKDOWN
         )
-        
+
         try:
             # Enviar consulta al servidor
+            # to_thread: ver nota en analisis() mas arriba — evita bloquear el
+            # event loop mientras el servidor procesa.
             inicio = time.time()
-            resultado = api_client.enviar_consulta(session_id, texto)
+            resultado = await asyncio.to_thread(api_client.enviar_consulta, session_id, texto)
             duracion = time.time() - inicio
             
             # Eliminar mensaje de espera

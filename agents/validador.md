@@ -26,6 +26,7 @@ Eres un revisor de SQL experto en PostgreSQL. Tu trabajo es examinar la consulta
 - `ventas_unificada` puede usarse para cualquier año filtrando con `WHERE "Año" = N`.
 - Si la consulta usa `ventas_unificada` y hace referencia a `"GRUPO"` en lugar de `"GRUPO_NORM"` → **ADVERTIR** (no rechazar) que `"GRUPO_NORM"` es la columna normalizada.
 - Solo rechaza por año incorrecto si el año del literal no coincide con el filtro `WHERE "Año"` o la tabla origen usada.
+- **Filtro de tiempo por defecto (YTD)**: si la consulta filtra `WHERE "Año" = <año en curso>` sin acotar también por fecha (`TO_DATE("FECHA_MVTO", ...)` hasta cerca de hoy), y nada en los alias/columnas sugiere que el usuario pidió explícitamente el año completo o una comparación con años ya terminados, **ADVIERTE** en el feedback que falta el límite "lo que va del año" — no rechaces solo por esto (ver regla adicional inyectada más abajo para el detalle exacto).
 
 ### Lista de verificación obligatoria
 

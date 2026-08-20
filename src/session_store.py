@@ -21,7 +21,17 @@ MAX_TURNOS_HISTORIAL   = 3    # Turnos que el LLM puede leer
 MAX_DFS_ACTIVOS        = 5    # Límite duro de DataFrames simultáneos
 VENTANA_OBSOLESCENCIA  = 3    # Turnos sin uso → df candidato a limpieza
 MIN_DFS_PARA_LIMPIAR   = 3    # Solo limpiar si hay más de este número
-TTL_SESION_SEGUNDOS    = 7200 # 2 horas sin actividad → sesión huérfana
+TTL_SESION_SEGUNDOS    = 3600 # 60 min sin actividad → sesión huérfana. Subido
+                               # temporalmente de 10 a 60 min para pruebas con
+                               # usuarios reales (la gente se distrae y vuelve);
+                               # considerar volver a bajarlo para uso normal en
+                               # producción — ver TTL_SESION_SEGUNDOS en
+                               # telegram_bot/session_manager.py, mismo valor.
+MAX_CHARS_PREGUNTA_LLM = 300  # Tope de la pregunta al serializarla para el LLM
+                               # (no se trunca el valor almacenado en Turno,
+                               # solo la copia que ve el modelo — evita que un
+                               # mensaje inusualmente largo se repita entero
+                               # en cada prompt durante las próximas 3 turnos)
 
 
 # ---------------------------------------------------------------------------
@@ -368,7 +378,10 @@ class SessionStore:
         historial_dict = [
             {
                 'turno':             t.turno,
-                'pregunta':          t.pregunta,
+                'pregunta':          (
+                    t.pregunta if len(t.pregunta) <= MAX_CHARS_PREGUNTA_LLM
+                    else t.pregunta[:MAX_CHARS_PREGUNTA_LLM] + '…'
+                ),
                 'ruta':              t.ruta,
                 'df_creado':         t.df_creado,
                 'df_usado':          t.df_usado,
@@ -451,9 +464,10 @@ class SessionStore:
     # ------------------------------------------------------------------
 
     def _ciclo_limpieza_ttl(self):
-        """Limpia sesiones huérfanas cada 30 minutos."""
+        """Limpia sesiones huérfanas. El ciclo corre más seguido que el TTL
+        para que una sesión no quede viva de más esperando el próximo barrido."""
         while True:
-            time.sleep(1800)  # 30 minutos
+            time.sleep(120)  # 2 minutos
             ahora = time.time()
             with self._lock:
                 expiradas = [

@@ -128,6 +128,13 @@ DETECCIÓN DE MÚLTIPLES CONSULTAS (sub_preguntas):
     de las demás) — incluye en cada una el filtro/contexto que le corresponda
     específicamente (ej: el filtro "en Antioquia" va SOLO en la sub-pregunta de
     tiendas, no en la de referencias).
+  - Si el mensaje asigna un FORMATO de salida (excel, gráfico, tabla, exportar)
+    a cada parte, CONSERVA esa palabra en la sub-pregunta reescrita que le
+    corresponde — no la omitas al resumir. Ej: "genera dos excels, uno de las
+    ventas por tienda en Antioquia y otro en Bogotá" → sub_preguntas: ["genera
+    un excel de las ventas por tienda en Antioquia", "genera un excel de las
+    ventas por tienda en Bogotá"] (NO "ventas por tienda en Antioquia" a secas
+    — eso pierde la intención de exportar y el archivo nunca se genera).
   - Si detectas sub_preguntas, "ruta" sigue siendo NUEVA_CONSULTA o REFINAMIENTO
     según corresponda (sub_preguntas es independiente de la ruta).
   - NO uses sub_preguntas para una sola pregunta con múltiples cláusulas que SÍ

@@ -20,6 +20,18 @@ from src.prompt_logger import registrar_prompt, actualizar_feedback
 # URL del servidor FastAPI
 SERVER_URL = os.getenv('SERVER_URL', 'http://localhost:8000')
 
+# ---------------------------------------------------------------------------
+# st.markdown() renderiza $..$ como LaTeX (KaTeX) — un solo "$" sin cerrar
+# activa modo matemático hasta el próximo "$" que aparezca en el texto, sin
+# importar cuán lejos esté ni de qué frase sea. Como el redactor escribe
+# valores en pesos como "$452,983,671", cualquier respuesta con 2+ montos
+# terminaba con todo el texto entre el primer y segundo "$" corrompido
+# (renderizado como fórmula en vez de texto). Se escapa el "$" a "\$" justo
+# antes de renderizar para que se muestre como texto literal.
+# ---------------------------------------------------------------------------
+def _escapar_dolares(texto: str) -> str:
+    return re.sub(r'(?<!\\)\$', r'\\$', texto) if texto else texto
+
 init_db()
 
 st.set_page_config(
@@ -163,7 +175,7 @@ if st.session_state.vista == 'item' and st.session_state.item_id:
                     elif idx % 3 == 1:
                         bloque = ''.join(buffer_md).strip()
                         if bloque:
-                            st.markdown(bloque)
+                            st.markdown(_escapar_dolares(bloque))
                         buffer_md = []
                         alt = partes[idx]
                         ruta_img_str = partes[idx + 1] if idx + 1 < len(partes) else ''
@@ -176,7 +188,7 @@ if st.session_state.vista == 'item' and st.session_state.item_id:
                     idx += 1
                 bloque = ''.join(buffer_md).strip()
                 if bloque:
-                    st.markdown(bloque)
+                    st.markdown(_escapar_dolares(bloque))
             else:
                 st.warning(f'Archivo no encontrado: {item["ruta"]}')
 
@@ -334,7 +346,7 @@ def _widget_feedback(prompt_id: str):
 
 def _mostrar_mensaje_asistente(respuesta: str, imagenes: list, ruta_excel: str, key_suffix: str = ''):
     """Renderiza el contenido de un mensaje del asistente."""
-    st.markdown(respuesta)
+    st.markdown(_escapar_dolares(respuesta))
     for ruta in imagenes:
         ruta_abs = BASE_DIR / ruta
         if ruta_abs.exists():
@@ -370,7 +382,7 @@ if not st.session_state.messages:
         st.session_state.messages.append({'role': 'user', 'content': prompt})
 
         with st.chat_message('user'):
-            st.markdown(prompt)
+            st.markdown(_escapar_dolares(prompt))
 
         with st.chat_message('assistant'):
             with st.spinner('Analizando...'):
@@ -399,7 +411,7 @@ for i, msg in enumerate(st.session_state.messages):
                 key_suffix=str(i),
             )
         else:
-            st.markdown(msg['content'])
+            st.markdown(_escapar_dolares(msg['content']))
 
         # Feedback solo en el último mensaje del asistente
         es_ultimo = (i == len(st.session_state.messages) - 1)
@@ -415,7 +427,7 @@ for i, msg in enumerate(st.session_state.messages):
 if prompt := st.chat_input('Escribe tu pregunta sobre ventas...', submit_mode='disable'):
     st.session_state.messages.append({'role': 'user', 'content': prompt})
     with st.chat_message('user'):
-        st.markdown(prompt)
+        st.markdown(_escapar_dolares(prompt))
 
     with st.chat_message('assistant'):
         with st.spinner('Analizando...'):

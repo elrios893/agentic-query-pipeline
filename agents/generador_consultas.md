@@ -41,13 +41,16 @@ Consulta explícita sobre dato crudo/original   → ventas_2025 o ventas_2026
 
 ### Patrón estándar con ventas_unificada
 ```sql
--- Consulta general (todo el año 2026)
+-- Consulta general SIN año/período especificado por el usuario → usa
+-- "lo que va del año" (YTD), NUNCA el año completo sin acotar. Ver fechas
+-- exactas de hoy en "Filtro de tiempo por defecto" en Contexto temporal:
 SELECT UPPER(TRIM("DEPARTAMENTO")) AS "DEPARTAMENTO",
        SUM("CANTIDAD") AS "Unidades",
        SUM("CANTIDAD" * "PVP") AS "Valor_COP"
 FROM ventas_unificada
 WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
   AND "Año" = 2026
+  AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '<hoy, ver Contexto temporal>'
 GROUP BY 1
 ORDER BY 2 DESC;
 
@@ -72,8 +75,9 @@ ORDER BY 2 DESC;
 ```
 
 ### Contexto temporal
-- La fecha de hoy y las reglas de comparación año-en-curso-vs-histórico se inyectan dinámicamente más abajo, en las "Reglas adicionales obligatorias" (sección con la fecha real del sistema) — usa esas fechas exactas, no un valor fijo.
+- La fecha de hoy, el "Filtro de tiempo por defecto" (YTD) y las reglas de comparación año-en-curso-vs-histórico se inyectan dinámicamente más abajo, en las "Reglas adicionales obligatorias" (sección con la fecha real del sistema) — usa esas fechas exactas, no un valor fijo.
 - Cuando el usuario mencione un día o mes sin especificar año, usa el año en curso indicado en esa sección con `ventas_unificada` (tabla preferida por defecto — ver arriba).
+- **Si el usuario NO especifica año, intervalo ni período de tiempo en absoluto**, SIEMPRE filtra por "lo que va del año" (año en curso, desde el 1 de enero hasta hoy) — el patrón exacto está en "Filtro de tiempo por defecto" de esa sección. NUNCA devuelvas el año completo sin ese límite, salvo que el usuario lo pida explícitamente o se trate de una comparación con años ya terminados.
 
 ### Reglas obligatorias
 

@@ -92,6 +92,16 @@ def _reglas_gen() -> str:
 - NUNCA uses FROM ventas sin sufijo ni _unificada.
 - Cuando el usuario mencione un dia o mes sin especificar año, SIEMPRE usa {anio} con ventas_unificada.
 
+### Filtro de tiempo por defecto — CRÍTICO
+- Si el usuario NO especifica año, un intervalo o un período de tiempo concreto (ej: "¿cuántas unidades hemos vendido de la referencia X?", "top productos por departamento", "ventas totales de la línea Y"), SIEMPRE filtra por LO QUE VA DEL AÑO {anio} (year-to-date). NUNCA devuelvas el año {anio} completo sin acotar, ni ambos años sin filtro:
+  ```sql
+  WHERE ... AND "Año" = {anio} AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '{anio}-01-01' AND '{rango_fin_actual}'
+  ```
+- Excepciones al default "lo que va del año" (usa el rango o año que corresponda en su lugar):
+  - El usuario pide explícitamente comparar {anio} vs {anio_ant} (u otros períodos) → sigue el patrón de "Comparaciones año en curso vs año histórico" más abajo (también usa YTD en ambos lados, así que el resultado es consistente con este default).
+  - El usuario pide explícitamente el total/histórico completo de un año ya terminado (ej. "todo el {anio_ant}", "el año pasado completo") → usa ese año completo sin recortar por fecha.
+  - El usuario da un período o rango explícito (ej. "en marzo", "del 1 al 15 de julio", "el trimestre pasado", "todo el {anio}" sabiendo que está en curso) → usa exactamente ese período/rango en vez del YTD.
+
 ### Comparaciones año en curso vs año histórico — CRÍTICO
 Comparar el año {anio} (en curso, solo tiene datos hasta {hoy_str}) contra el año {anio_ant} COMPLETO es una comparación FALSA: un lado tiene ~{hoy.timetuple().tm_yday} días de datos y el otro 365. Cualquier "caída" o "crecimiento" calculado así es artificial, no real.
 - Si el usuario pide comparar "este año"/"{anio}" contra "{anio_ant}"/"el año pasado" SIN pedir explícitamente el total anual completo de {anio_ant}, usa el MISMO rango de fechas en ambos años (mismo día del año):
@@ -152,7 +162,8 @@ def _reglas_val() -> str:
 14. CAST para ROUND: si la consulta usa ROUND() sobre una operacion aritmetica (division, multiplicacion), DEBE incluir CAST(...AS numeric). Si ves ROUND((... * 100) / ..., N) sin CAST → RECHAZAR. La forma correcta es ROUND(CAST((... * 100) / ... AS numeric), N).
 15. Deteccion de Cartesian product en comparaciones de periodos: si la consulta contiene FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN combinado con EXTRACT(DAY FROM ...) = EXTRACT(DAY FROM ...) u otro EXTRACT en la condicion ON → RECHAZAR. Feedback: "Para comparar periodos (enero vs febrero), NO uses JOINs. Usa UNA tabla con multiples CASE WHEN para cada periodo: SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero".
 16. LIMIT obligatorio en subqueries con "día/fecha de mayor venta": si la consulta detecta un patrón como COALESCE(...SELECT...GROUP BY fecha...LIMIT 1), DEBE tener LIMIT N en la query principal. Sin LIMIT → RECHAZAR. Mensaje: "Falta LIMIT en la query principal. Subqueries que buscan 'día de mayor venta' requieren LIMIT obligatorio para evitar procesar todas las filas. Agregar LIMIT 10 (o el número que pidió el usuario) antes del punto y coma final".
-17. Tabla ventas_unificada: es una tabla válida. Aceptar consultas que usen FROM ventas_unificada. Si usa "GRUPO" en lugar de "GRUPO_NORM" sobre ventas_unificada, ADVERTIR en el feedback pero NO rechazar."""
+17. Tabla ventas_unificada: es una tabla válida. Aceptar consultas que usen FROM ventas_unificada. Si usa "GRUPO" en lugar de "GRUPO_NORM" sobre ventas_unificada, ADVERTIR en el feedback pero NO rechazar.
+19. Filtro de tiempo por defecto sin acotar: si la consulta filtra WHERE "Año" = {anio} (año en curso) SIN restringir también por fecha (TO_DATE("FECHA_MVTO", ...) BETWEEN/<= hasta una fecha cercana a hoy), y no hay evidencia en los alias/columnas de que el usuario pidió explícitamente "todo el año", una proyección, o una comparación entre años ya terminados, ADVIERTE en el feedback que falta acotar a "lo que va del año" (year-to-date) — no rechaces solo por esto, es un recordatorio para el generador, no un error de sintaxis."""
 
 PATRONES_INFORME = re.compile(
     r'\b(informe|reporte|report|documento|word|docx|'
@@ -281,6 +292,23 @@ def leer_skill_sin_yaml(nombre: str) -> str:
             return partes[2].strip()
     return contenido
 
+def cargar_secciones_skill(nombre: str, secciones: list[str]) -> str:
+    """Como cargar_system_prompt() pero para skills/<nombre>/SKILL.md: concatena
+    solo las secciones '## <nombre>' pedidas en vez del archivo completo.
+    Evita repetir contenido que ya se envia por separado (ej. la seccion
+    'Bloques disponibles', que generar_informe() ya adjunta via
+    extraer_seccion_skill) y contenido de otra fase (ej. 'Filosofia de uso'
+    u 'Orden de bloques', que son guia de planificacion, no de redaccion)."""
+    disponibles = _secciones_nivel2(leer_skill_sin_yaml(nombre))
+    partes = []
+    for s in secciones:
+        contenido = disponibles.get(s)
+        if contenido is None:
+            print(f'  [WARN] Sección "{s}" no encontrada en skills/{nombre}/SKILL.md')
+            continue
+        partes.append(contenido)
+    return '\n\n'.join(partes)
+
 def leer_skill_bloques_resumen(nombre: str) -> str:
     """Extrae solo los encabezados de bloque del skill de informes para el planning.
     Ahorra ~2,500 tokens en la llamada de planificacion."""
@@ -368,6 +396,93 @@ def exportar_excel_desde_resultado(resultado: dict, pregunta: str) -> str:
     except Exception as e:
         print(f'Error al generar Excel: {e}')
         return ''
+
+
+def quiere_excel(pregunta: str, resultado: dict) -> bool:
+    """Criterio unico de 'esta consulta necesita exportarse a Excel':
+    lo pidio explicitamente en el texto, o el resultado supera las 100
+    filas (umbral de auto-exportacion). Usado tanto por procesar_consulta
+    (consulta unica) como por _procesar_multi_consulta en server.py (para
+    decidir que sub-preguntas entran al Excel combinado de varias hojas)."""
+    if not resultado or not resultado.get('rows'):
+        return False
+    total_filas = resultado.get('total_filas', 0)
+    return total_filas > 100 or es_intencion_excel(pregunta)
+
+
+_PATRON_VERBO_FORMATO = re.compile(
+    r'^(genera(r|me)?|crea(r|me)?|dame|quiero|haz(me)?|exporta(r|me)?|'
+    r'descarga(r|me)?|mu[eé]stra(me)?)\s+(un|una|el|la|los|las)?\s*'
+    r'(excel|\.xlsx?|hoja\s*de\s*calculo|gr[aá]fic\w*|tabla)\w*\s*(de|del|con|sobre)?\s*',
+    re.IGNORECASE,
+)
+
+
+def _titulo_hoja(pregunta: str) -> str:
+    """Quita el verbo+formato ('genera un excel de...') de una sub-pregunta
+    para usar solo el tema como nombre/título de hoja — sin esto, el nombre
+    de hoja queda como 'genera un excel de las ventas p...' en vez de algo
+    legible como 'Ventas por tienda en Antioquia'."""
+    limpio = _PATRON_VERBO_FORMATO.sub('', pregunta.strip()).strip()
+    limpio = limpio or pregunta.strip()
+    return limpio[0].upper() + limpio[1:] if limpio else limpio
+
+
+def exportar_excel_multi_hoja(hojas: list[dict], nombre_base: str) -> dict:
+    """
+    Exporta VARIOS resultados a un solo archivo .xlsx con una hoja por
+    elemento, en vez de un archivo por elemento — usado cuando una
+    sub-consulta (ver server.py::_procesar_multi_consulta) detecta que 2+
+    de sus sub-preguntas quieren Excel.
+
+    Args:
+        hojas: lista de {'pregunta': str, 'resultado': dict} — 'resultado'
+            es el dict de ejecutar_consulta (columns/rows).
+        nombre_base: texto para derivar el nombre del archivo (slug).
+
+    Retorna: {'ruta': str, 'nombres_hojas': list[str]} — 'ruta' vacio si falla.
+    """
+    hojas_payload = []
+    for h in hojas:
+        cols = h['resultado'].get('columns', [])
+        rows = h['resultado'].get('rows', [])
+        if not cols or not rows:
+            continue
+        titulo = _titulo_hoja(h['pregunta'])
+        hojas_payload.append({
+            'headers':    cols,
+            'rows':       rows,
+            'sheet_name': titulo[:31],
+            'title':      titulo[:60],
+        })
+    if not hojas_payload:
+        return {'ruta': '', 'nombres_hojas': []}
+
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    slug = re.sub(r'[^a-z0-9]+', '_', nombre_base.lower())[:40].strip('_') or 'datos'
+    ruta = str(EXCEL_SHEETS_DIR / f'{slug}_{ts}.xlsx')
+
+    import json as _json
+    payload = _json.dumps({'hojas': hojas_payload, 'output_path': ruta})
+
+    script = TOOLS_DIR / 'generar_excel.py'
+    env = os.environ.copy()
+    env['EXCEL_DATA'] = payload
+    env['PYTHONIOENCODING'] = 'utf-8'
+    try:
+        proc = subprocess.run(
+            ['python', str(script)],
+            capture_output=True, text=True, env=env, timeout=60, encoding='utf-8'
+        )
+        out = _json.loads(proc.stdout)
+        if out.get('success'):
+            print(f'Excel combinado generado ({len(out["hojas"])} hoja(s)): {ruta}')
+            return {'ruta': ruta, 'nombres_hojas': out['hojas']}
+        print(f'Error al generar Excel combinado: {out.get("error")}')
+        return {'ruta': '', 'nombres_hojas': []}
+    except Exception as e:
+        print(f'Error al generar Excel combinado: {e}')
+        return {'ruta': '', 'nombres_hojas': []}
 
 
 def limpiar_texto(texto: str) -> str:
@@ -737,7 +852,18 @@ Pregunta original del usuario: {pregunta}"""
             print(f'Nueva consulta:\n{consulta_formateada}\n')
         else:
             print('Se agotaron los intentos de validacion.')
-            sys.exit(1)
+            # RuntimeError, no sys.exit(1): esta función corre dentro del
+            # proceso del servidor FastAPI (server.py llama a procesar_consulta
+            # directamente, sin subprocess). sys.exit() lanza SystemExit, que
+            # hereda de BaseException — el except Exception de /chat en
+            # server.py NO lo captura, así que el error nunca se registraba en
+            # prompts/ y el usuario no recibía ninguna respuesta. main() (modo
+            # CLI, abajo) captura este RuntimeError y sí sigue terminando el
+            # proceso con exit code 1, igual que antes.
+            raise RuntimeError(
+                f'No se pudo generar una consulta SQL válida para: "{pregunta}". '
+                f'Último rechazo del validador: {validacion}'
+            )
 
 def generar_graficos_informe(resultados, pregunta, plan, timestamp):
     """
@@ -1253,7 +1379,17 @@ def generar_informe(pregunta: str):
     print('=' * 60)
 
     skill_informe_planning  = leer_skill_bloques_resumen('informe_ventas')
-    skill_informe_redaccion = leer_skill_sin_yaml('informe_ventas')
+    # OPTIMIZACION: antes se cargaba el skill completo (~3.8K palabras) como
+    # system prompt de FASE 4, duplicando la seccion 'Bloques disponibles'
+    # que ya se envia por separado via bloques_instructions (linea ~1500) y
+    # arrastrando secciones de la fase de planificacion (Filosofia de uso,
+    # Orden de bloques, Ejemplo de lectura de intencion) que no aportan a la
+    # redaccion. Ahora solo se cargan las dos secciones que si son
+    # necesarias para redactar: convenciones de datos y reglas de formato.
+    skill_informe_redaccion = cargar_secciones_skill('informe_ventas', [
+        'Reglas de negocio (siempre aplican)',
+        'REGLAS DE FORMATO MARKDOWN — OBLIGATORIAS',
+    ])
 
     system_gen = cargar_system_prompt('generador_consultas.md', ['Instrucciones (system prompt)']) + _reglas_gen()
     system_val = cargar_system_prompt('validador.md', ['Instrucciones (system prompt)']) + _reglas_val()
@@ -1957,6 +2093,7 @@ def agente_analista(
     sql_inicial: str,
     system_gen: str,
     system_val: str,
+    metricas_iniciales: dict = None,
 ) -> dict:
     """
     Ejecuta el análisis profundo sobre los datos.
@@ -1984,7 +2121,10 @@ def agente_analista(
             'descripcion': 'Consulta inicial del usuario',
             'sql':         sql_inicial,
             'resultado':   resultado_inicial,
-            'metricas':    pre_computar_metricas(resultado_inicial),
+            # Si el llamador ya calculó las métricas sobre este mismo
+            # resultado (ej. procesar_consulta las necesita también para el
+            # digest del redactor), se reutilizan en vez de recalcular.
+            'metricas':    metricas_iniciales if metricas_iniciales is not None else pre_computar_metricas(resultado_inicial),
         }
     ]
     # Hallazgos de 'analisis_parcial' en rondas intermedias que el analista
@@ -2140,7 +2280,11 @@ def agente_analista(
     }
 
 
-def procesar_consulta(pregunta: str, contexto_refinamiento: dict | None = None):
+def procesar_consulta(
+    pregunta: str,
+    contexto_refinamiento: dict | None = None,
+    permitir_excel_individual: bool = True,
+):
     """
     Pipeline principal de consulta.
 
@@ -2154,6 +2298,11 @@ def procesar_consulta(pregunta: str, contexto_refinamiento: dict | None = None):
               'filtros_previos':   list,  filtros activos de la consulta previa
               'descripcion_df':    str,   descripción del df anterior
             }
+        permitir_excel_individual: si False, esta consulta NUNCA exporta su
+            propio Excel (ni por umbral de filas ni por intención explícita)
+            aunque la pregunta lo pida — usado por server.py::_procesar_multi_consulta,
+            que combina el Excel de varias sub-preguntas en un solo archivo de
+            varias hojas en vez de dejar que cada una genere el suyo.
 
     Retorna:
         {
@@ -2233,7 +2382,7 @@ explícitamente pida cambiarlos.
     # ------------------------------------------------------------------
     ruta_excel = ''
     excel_auto = False
-    if total_filas > 100 and resultado.get('rows'):
+    if permitir_excel_individual and total_filas > 100 and resultado.get('rows'):
         print(f'[{MODELO}] Mas de 100 filas ({total_filas}). Generando Excel con todos los datos...')
         ruta_excel = exportar_excel_desde_resultado(resultado, pregunta)
         excel_auto = bool(ruta_excel)
@@ -2258,7 +2407,7 @@ explícitamente pida cambiarlos.
     # Exportar a Excel si el usuario lo pide explicitamente
     # (solo si no se generó ya por threshold)
     # ------------------------------------------------------------------
-    if not excel_auto and es_intencion_excel(pregunta) and resultado.get('rows'):
+    if permitir_excel_individual and not excel_auto and es_intencion_excel(pregunta) and resultado.get('rows'):
         print(f'[{MODELO}] Exportando a Excel...')
         ruta_excel = exportar_excel_desde_resultado(resultado, pregunta)
 
@@ -2267,6 +2416,10 @@ explícitamente pida cambiarlos.
     # ------------------------------------------------------------------
     analisis_profundo = None
     activar_analista = forzar_analisis or es_intencion_analisis(pregunta, resultado)
+    # Se calcula una sola vez y se reutiliza abajo para digest_para_redactor
+    # si tambien aplica (evita recalcular pre_computar_metricas dos veces
+    # sobre el mismo 'resultado' cuando el analista corrio Y total_filas>100).
+    metricas_resultado = None
 
     if activar_analista:
         modo = '/analisis' if forzar_analisis else (
@@ -2274,12 +2427,14 @@ explícitamente pida cambiarlos.
         )
         print(f'\n[ANALISTA] Activado ({modo}). Iniciando análisis profundo...')
         print('=' * 60)
+        metricas_resultado = pre_computar_metricas(resultado)
         analisis_profundo = agente_analista(
             pregunta=pregunta,
             resultado_inicial=resultado,
             sql_inicial=sql_final,
             system_gen=system_gen,
             system_val=system_val,
+            metricas_iniciales=metricas_resultado,
         )
         print('=' * 60)
         print('[ANALISTA] Análisis completado.\n')
@@ -2315,7 +2470,7 @@ explícitamente pida cambiarlos.
     digest_para_redactor = None
     if total_filas > 100:
         resultado_para_redactor = {**resultado, 'rows': _muestra_representativa(resultado, 50)}
-        metricas_regulares = pre_computar_metricas(resultado)
+        metricas_regulares = metricas_resultado if metricas_resultado is not None else pre_computar_metricas(resultado)
         digest_para_redactor = metricas_regulares.get('concentracion_por_dimension')
     titulo_resultado = (
         f'### Resultado (muestra representativa de {len(resultado_para_redactor["rows"])} de {total_filas} filas)'
@@ -2395,10 +2550,14 @@ def main():
 
     pregunta = sys.argv[1]
 
-    if es_intencion_informe(pregunta):
-        generar_informe(pregunta)
-    else:
-        procesar_consulta(pregunta)
+    try:
+        if es_intencion_informe(pregunta):
+            generar_informe(pregunta)
+        else:
+            procesar_consulta(pregunta)
+    except RuntimeError as e:
+        print(f'\nError: {e}')
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()

@@ -21,6 +21,7 @@ Ejemplo de EXCEL_DATA:
 """
 import sys
 import os
+import re
 import json
 from pathlib import Path
 
@@ -95,18 +96,20 @@ def _to_num(val):
     return val
 
 
-def generar_excel(
-    headers: list,
-    rows: list,
-    output_path: str,
-    sheet_name: str = 'Datos',
-    title: str = None,
-    column_widths: list = None,
-) -> dict:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = sheet_name
+def _nombre_hoja_valido(nombre: str, usados: set) -> str:
+    """Sanitiza un nombre de hoja para Excel: max 31 chars, sin : \\ / ? * [ ],
+    y sin colisionar con nombres ya usados en el mismo workbook."""
+    limpio = re.sub(r'[:\\/?*\[\]]', ' ', nombre or 'Datos').strip()[:31] or 'Datos'
+    candidato = limpio
+    sufijo = 2
+    while candidato.lower() in usados:
+        candidato = f'{limpio[:28]} {sufijo}'
+        sufijo += 1
+    usados.add(candidato.lower())
+    return candidato
 
+
+def _escribir_hoja(ws, headers: list, rows: list, title: str, column_widths: list = None) -> None:
     current_row = 1
 
     if title:
@@ -151,6 +154,47 @@ def generar_excel(
     for col_idx, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(col_idx)].width = w
 
+
+def generar_excel(
+    headers: list = None,
+    rows: list = None,
+    output_path: str = None,
+    sheet_name: str = 'Datos',
+    title: str = None,
+    column_widths: list = None,
+    hojas: list = None,
+) -> dict:
+    """
+    Genera un .xlsx. Si "hojas" viene con 2+ elementos, se crea una hoja
+    por elemento en el MISMO workbook (multi-consulta con exportacion a
+    excel: una hoja por sub-pregunta en vez de un archivo por sub-pregunta).
+    Cada elemento de "hojas": {"headers", "rows", "sheet_name", "title",
+    "column_widths" (opcional)}. Si "hojas" no viene, se usa el modo de una
+    sola hoja de siempre (headers/rows/sheet_name/title top-level).
+    """
+    if not hojas:
+        hojas = [{
+            'headers': headers, 'rows': rows,
+            'sheet_name': sheet_name, 'title': title,
+            'column_widths': column_widths,
+        }]
+
+    wb = Workbook()
+    nombres_usados = set()
+    nombres_finales = []
+    for idx, hoja in enumerate(hojas):
+        ws = wb.active if idx == 0 else wb.create_sheet()
+        nombre = _nombre_hoja_valido(hoja.get('sheet_name') or 'Datos', nombres_usados)
+        ws.title = nombre
+        nombres_finales.append(nombre)
+        _escribir_hoja(
+            ws,
+            headers=hoja.get('headers') or [],
+            rows=hoja.get('rows') or [],
+            title=hoja.get('title'),
+            column_widths=hoja.get('column_widths'),
+        )
+
     out_path = Path(output_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(str(out_path))
@@ -158,9 +202,9 @@ def generar_excel(
     return {
         'success': True,
         'archivo': str(out_path.resolve()),
-        'hojas': [sheet_name],
-        'filas': len(rows),
-        'columnas': len(headers),
+        'hojas': nombres_finales,
+        'filas': sum(len(h.get('rows') or []) for h in hojas),
+        'columnas': len(hojas[0].get('headers') or []) if hojas else 0,
     }
 
 
@@ -179,11 +223,17 @@ def main():
         print(json.dumps({'success': False, 'error': f'JSON invalido en EXCEL_DATA: {e}'}))
         sys.exit(1)
 
-    headers = data.get('headers')
-    rows = data.get('rows')
-    if not headers or not rows:
-        print(json.dumps({'success': False, 'error': 'EXCEL_DATA debe contener "headers" (list) y "rows" (list).'}))
-        sys.exit(1)
+    hojas = data.get('hojas')
+    if hojas:
+        if not all(h.get('headers') and h.get('rows') for h in hojas):
+            print(json.dumps({'success': False, 'error': 'Cada elemento de "hojas" debe traer "headers" y "rows".'}))
+            sys.exit(1)
+    else:
+        headers = data.get('headers')
+        rows = data.get('rows')
+        if not headers or not rows:
+            print(json.dumps({'success': False, 'error': 'EXCEL_DATA debe contener "headers" (list) y "rows" (list), o "hojas" (list).'}))
+            sys.exit(1)
 
     if len(sys.argv) > 1:
         output_path = sys.argv[1]
@@ -194,12 +244,13 @@ def main():
             sys.exit(1)
 
     result = generar_excel(
-        headers=headers,
-        rows=rows,
+        headers=data.get('headers'),
+        rows=data.get('rows'),
         output_path=output_path,
         sheet_name=data.get('sheet_name', 'Datos'),
         title=data.get('title'),
         column_widths=data.get('column_widths'),
+        hojas=hojas,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

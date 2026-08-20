@@ -41,9 +41,16 @@ def main():
     logger.info(f"Token configurado: {TELEGRAM_BOT_TOKEN[:20]}...")
 
     # Construir aplicación
+    # concurrent_updates=True: sin esto, PTB procesa los updates entrantes
+    # secuencialmente — mientras la consulta de un usuario corre (puede tardar
+    # minutos con informes/análisis), el bot no atiende a nadie más y parece
+    # congelado. Se combina con asyncio.to_thread() en handlers.py, que saca
+    # la llamada HTTP bloqueante del event loop (concurrent_updates por sí solo
+    # no alcanza si esa llamada sigue bloqueando el loop entero).
     app = (
         Application.builder()
         .token(TELEGRAM_BOT_TOKEN)
+        .concurrent_updates(True)
         .build()
     )
 

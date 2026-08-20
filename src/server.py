@@ -52,6 +52,8 @@ from src.orquestador import (
     cargar_system_prompt,
     _reglas_gen,
     _es_comando_analisis,
+    quiere_excel,
+    exportar_excel_multi_hoja,
 )
 from src.prompt_logger import registrar_prompt, actualizar_feedback
 from tools.tool_pandas import ejecutar_operacion, catalogo_para_llm
@@ -170,7 +172,7 @@ def chat(req: ChatRequest):
                 # mismo mensaje (ej. "una tabla de X y otra de Y") — cada una
                 # corre por el pipeline normal de una sola consulta en vez de
                 # forzarlas todas en una sola tabla. Ver _procesar_multi_consulta.
-                resultado = _procesar_multi_consulta(sub_preguntas, contexto_ref, session_id)
+                resultado = _procesar_multi_consulta(sub_preguntas, contexto_ref, session_id, pregunta)
                 tipo      = 'consulta'
             elif es_intencion_informe(pregunta):
                 resultado = generar_informe(pregunta)
@@ -223,14 +225,33 @@ def chat(req: ChatRequest):
     except Exception as e:
         duracion_error = round(time.time() - t_inicio, 2)
         print(f'[SERVER] ERROR: {e}')
-        registrar_prompt(
+        log_id_error = registrar_prompt(
             pregunta=pregunta,
             tipo='error',
             duracion_seg=duracion_error,
             exito=False,
             prompt_source=req.origen,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        # Antes: raise HTTPException(500, detail=str(e)) — el usuario veía el
+        # texto crudo de la excepción (mensajes de Postgres, tracebacks, etc).
+        # Ahora se devuelve una respuesta normal con tipo='error': Streamlit
+        # la renderiza igual que cualquier otra respuesta y Telegram entra por
+        # el camino de éxito (resultado.get('success', True) es True al no
+        # venir la clave 'success' en absoluto). El detalle técnico completo
+        # sigue impreso en consola y en prompts/ — solo cambia lo que ve el
+        # usuario. Se retorna aquí mismo, sin pasar por agregar_turno, para
+        # que un turno fallido no quede en el historial de sesión.
+        return ChatResponse(
+            respuesta=(
+                'Ocurrió un error al procesar tu consulta. Intenta reformular '
+                'la pregunta o vuelve a intentarlo en un momento.'
+            ),
+            ruta=ruta,
+            tipo='error',
+            log_id=log_id_error,
+            turno=sesion.turno_actual,
+            duracion_seg=duracion_error,
+        )
 
     # ------------------------------------------------------------------
     # 3. Guardar turno en historial
@@ -416,6 +437,7 @@ def _procesar_multi_consulta(
     sub_preguntas: list[str],
     contexto_ref: dict | None,
     session_id: str,
+    pregunta_original: str = '',
 ) -> dict:
     """
     Ejecuta cada sub-pregunta detectada por el enrutador (clasificacion['sub_preguntas'])
@@ -432,19 +454,27 @@ def _procesar_multi_consulta(
     sin este encabezado, dos sub-consultas seguidas se ven indistinguibles en
     el log de la terminal.
 
+    Excel: cada procesar_consulta() corre con permitir_excel_individual=False
+    — si cada sub-pregunta generara su propio archivo, solo el primero
+    sobrevivía (el resto quedaba huérfano en disco, sin referencia en la
+    respuesta). En su lugar, al final se decide con el mismo criterio de
+    siempre (quiere_excel: >100 filas o "excel" explícito en el texto) cuáles
+    sub-preguntas quieren Excel, y se genera UN solo archivo con una hoja por
+    cada una (exportar_excel_multi_hoja).
+
     Limitación conocida: resultado_sql/sql_usada al final del dict quedan como
     los de la ÚLTIMA sub-pregunta (no hay un "resultado principal" cuando hay
     varios) — solo importan para el flujo de REFINAMIENTO de un turno futuro
     que no especifique a cuál de los N resultados se refiere; no afecta la
     respuesta que ve el usuario en este turno, que sí incluye las N tablas.
     """
-    respuestas    = []
-    imagenes      = []
-    ruta_excel    = ''
-    sql_queries   = []
-    dfs_creados   = []
-    resultado_sql = None
-    sql_usada     = None
+    respuestas       = []
+    imagenes         = []
+    sql_queries      = []
+    dfs_creados      = []
+    candidatos_excel = []  # [{'pregunta': sub, 'resultado': resultado_sql}]
+    resultado_sql    = None
+    sql_usada        = None
     n = len(sub_preguntas)
 
     print(f'[SERVER] Enrutador detectó {n} sub-consultas en el mismo mensaje:')
@@ -456,15 +486,19 @@ def _procesar_multi_consulta(
         print(f'[SERVER] Sub-consulta {i}/{n}: "{sub}"')
         print(f'{"-"*60}')
 
-        resultado = procesar_consulta(sub, contexto_refinamiento=contexto_ref)
+        resultado = procesar_consulta(
+            sub, contexto_refinamiento=contexto_ref, permitir_excel_individual=False,
+        )
+        resultado_sql_sub = resultado.get('resultado_sql')
 
-        filas = (resultado.get('resultado_sql') or {}).get('total_filas', 0)
+        filas = (resultado_sql_sub or {}).get('total_filas', 0)
         print(f'[SERVER] Sub-consulta {i}/{n} completada — {filas} fila(s).')
 
         respuestas.append(f'### {i}. {sub}\n\n{resultado.get("respuesta", "")}')
         imagenes.extend(resultado.get('imagenes', []))
-        if not ruta_excel and resultado.get('ruta_excel'):
-            ruta_excel = resultado['ruta_excel']
+
+        if quiere_excel(sub, resultado_sql_sub or {}):
+            candidatos_excel.append({'pregunta': sub, 'resultado': resultado_sql_sub})
 
         for q in resultado.get('sql_queries', []):
             sql_queries.append({
@@ -473,19 +507,35 @@ def _procesar_multi_consulta(
             })
 
         df_nom = _crear_df_si_aplica(
-            session_id, sub, resultado.get('resultado_sql'), resultado.get('sql_usada', ''),
+            session_id, sub, resultado_sql_sub, resultado.get('sql_usada', ''),
         )
         if df_nom:
             dfs_creados.append(df_nom)
 
-        resultado_sql = resultado.get('resultado_sql')
+        resultado_sql = resultado_sql_sub
         sql_usada     = resultado.get('sql_usada')
 
+    respuesta_final = '\n\n---\n\n'.join(respuestas)
+
+    ruta_excel = ''
+    if candidatos_excel:
+        print(f'[SERVER] {len(candidatos_excel)}/{n} sub-consulta(s) piden Excel — '
+              f'generando archivo combinado de {len(candidatos_excel)} hoja(s)...')
+        salida = exportar_excel_multi_hoja(candidatos_excel, pregunta_original or 'consulta')
+        ruta_excel = salida['ruta']
+        if ruta_excel:
+            hojas_txt = ', '.join(salida['nombres_hojas'])
+            respuesta_final += (
+                f'\n\n---\n\n**Excel generado** ({len(salida["nombres_hojas"])} hoja(s): '
+                f'{hojas_txt}): {ruta_excel}'
+            )
+
     print(f'\n[SERVER] Multi-consulta completada: {n} sub-consultas, '
-          f'{len(dfs_creados)} DataFrame(s) creado(s), {len(sql_queries)} SQL registrada(s).')
+          f'{len(dfs_creados)} DataFrame(s) creado(s), {len(sql_queries)} SQL registrada(s), '
+          f'excel={"si" if ruta_excel else "no"}.')
 
     return {
-        'respuesta':     '\n\n---\n\n'.join(respuestas),
+        'respuesta':     respuesta_final,
         'imagenes':      imagenes,
         'ruta_excel':    ruta_excel,
         'sql_queries':   sql_queries,

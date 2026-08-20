@@ -16,12 +16,21 @@ class APIClient:
     def __init__(self, server_url: str):
         self.server_url = server_url
         self.session = requests.Session()
-        self.timeout = 30
-    
+        # 660s = mismo timeout que Streamlit (ver ui/streamlit_app.py), mayor
+        # al timeout interno del servidor. Un informe o un análisis profundo
+        # puede tardar varios minutos; con el timeout viejo de 30s Telegram
+        # cortaba la espera mientras el servidor seguía trabajando, y el
+        # resultado se perdía para el usuario aunque el turno igual quedara
+        # guardado en la sesión del servidor.
+        self.timeout = 660
+
     def enviar_consulta(self, session_id: str, pregunta: str) -> Dict[str, Any]:
-        """Envía una consulta al servidor y obtiene la respuesta"""
+        """Envía una consulta al servidor y obtiene la respuesta.
+        Usa requests.post (no self.session) porque se llama vía
+        asyncio.to_thread desde varios usuarios a la vez — requests.Session
+        no es thread-safe para uso concurrente."""
         try:
-            response = self.session.post(
+            response = requests.post(
                 f"{self.server_url}/chat",
                 json={
                     "session_id": session_id,
@@ -34,7 +43,7 @@ class APIClient:
             return response.json()
         except requests.exceptions.Timeout:
             return {
-                "error": "La consulta tardó demasiado. Intenta con una pregunta más específica.",
+                "error": "La consulta tardó demasiado (más de 11 minutos). Intenta con una pregunta más específica.",
                 "success": False
             }
         except requests.exceptions.ConnectionError:

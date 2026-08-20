@@ -12,7 +12,13 @@ from datetime import datetime
 from pathlib import Path
 import matplotlib
 matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+# Figure (API orientada a objetos) en vez de matplotlib.pyplot: pyplot
+# mantiene un registro global de figuras activas, que NO es thread-safe. El
+# servidor corre /chat en un threadpool (varios usuarios a la vez pueden estar
+# generando gráficos en paralelo) — con pyplot, dos gráficos simultáneos
+# pueden pisarse o mezclar datos. Figure() crea una figura aislada por
+# llamada, sin tocar ningún estado compartido.
+from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 import numpy as np
 
@@ -192,7 +198,8 @@ def generar_grafico(
         size = _calcular_tamano(n_grupos, horizontal=False)
     else:
         size = _calcular_tamano(n, horizontal=False)
-    fig, ax = plt.subplots(figsize=size, dpi=DPI)
+    fig = Figure(figsize=size, dpi=DPI)
+    ax = fig.subplots()
 
     # --- Procesar datos ---
     x_vals  = [str(d.get('x', '')) for d in datos]
@@ -289,7 +296,6 @@ def generar_grafico(
 
         elif tipo == 'barras_agrupadas':
             if not any(d.get('serie') for d in datos):
-                plt.close(fig)
                 return {'path': None, 'width_px': 0, 'height_px': 0, 'error': 'barras_agrupadas requiere clave "serie" en cada dict de datos.'}
             _graficar_barras_agrupadas(ax, datos, formatter, tick_fs)
             aplicar_estilo_creytex(fig, ax, formatter=fmt_func, horizontal=False)
@@ -322,7 +328,6 @@ def generar_grafico(
         fig.tight_layout()
         fig.savefig(ruta, dpi=DPI, bbox_inches='tight', facecolor='white')
         ancho_px, alto_px = fig.get_size_inches() * DPI
-        plt.close(fig)
         return {
             'path': str(ruta),
             'width_px': int(ancho_px),
@@ -331,7 +336,6 @@ def generar_grafico(
         }
 
     except Exception as e:
-        plt.close(fig)
         return {'path': None, 'width_px': 0, 'height_px': 0, 'error': str(e)}
 
 
