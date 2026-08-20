@@ -678,7 +678,7 @@ def ejecutar_consulta(sql: str, limite: int = 1000) -> dict:
         )
         return json.loads(resultado.stdout)
     except Exception as e:
-        return {'success': False, 'error': str(e)}
+        return {'success': False, 'error': str(e), 'error_fuente': 'proceso'}
 
 
 def generar_sql_y_validar(pregunta: str, system_gen: str, system_val: str) -> str:
@@ -1925,16 +1925,19 @@ def _fusionar_hallazgos(acumulado: dict, parcial: dict) -> None:
 
 
 def _ejecutar_consulta_con_reintento(sql: str, system_gen: str) -> tuple[dict, str]:
-    """Ejecuta una SQL; si Postgres devuelve error, reintenta UNA vez
-    reinyectando el mensaje de error al generador (mismo patrón que
-    generar_informe usa para sus bloques). No aborta el análisis si falla
-    dos veces — el llamador decide si descarta esta consulta puntual."""
+    """Ejecuta una SQL; si Postgres devuelve un error real de ejecución,
+    reintenta UNA vez reinyectando el mensaje de error al generador (mismo
+    patrón que generar_informe usa para sus bloques). No reintenta ante
+    otro tipo de fallo (guardia de solo-lectura, timeout/crash del
+    subprocess) — en esos casos no hay nada en la SQL que "corregir" y
+    reintentar solo desperdicia el único intento disponible. El llamador
+    decide si descarta la consulta cuando el resultado final sigue fallando."""
     resultado = ejecutar_consulta(sql)
-    if resultado.get('success'):
+    if resultado.get('success') or resultado.get('error_fuente') != 'postgres':
         return resultado, sql
 
     error_pg = resultado.get('error', '')
-    print(f'  [analista] Error en consulta complementaria: {error_pg} — reintentando con corrección...')
+    print(f'  Error de Postgres: {error_pg} — reintentando con corrección...')
     correccion = llamar_llm(
         system_gen,
         f'La siguiente SQL produjo un error en PostgreSQL:\n\nSQL:\n{sql}\n\n'
@@ -2199,7 +2202,13 @@ explícitamente pida cambiarlos.
     sql_final = generar_sql_y_validar(pregunta, system_gen, system_val)
 
     print('Ejecutando consulta en PostgreSQL...')
-    resultado = ejecutar_consulta(sql_final)
+    # Si la SQL pasó el validador pero Postgres igual devuelve un error real
+    # de ejecución (columna inexistente, tipo incompatible, etc.), se
+    # reintenta UNA vez reinyectando el error al generador antes de rendirse
+    # — el usuario nunca ve el primer error si la corrección funciona.
+    # sql_final queda actualizada a la versión que realmente se ejecutó,
+    # para que el resto del pipeline (redactor, trazabilidad) sea consistente.
+    resultado, sql_final = _ejecutar_consulta_con_reintento(sql_final, system_gen)
 
     if not resultado.get('success'):
         print(f'\nError al ejecutar: {resultado.get("error")}')

@@ -75,6 +75,7 @@ def execute_query(query: str, limit: int = None) -> dict:
         return {
             'success': False,
             'error': 'Operación no permitida. Solo consultas SELECT de lectura.',
+            'error_fuente': 'guardia',
         }
 
     if limit and 'limit' not in query.lower():
@@ -107,6 +108,7 @@ def execute_query(query: str, limit: int = None) -> dict:
         return {
             'success': False,
             'error': str(e),
+            'error_fuente': 'postgres',
         }
     finally:
         cur.close()
