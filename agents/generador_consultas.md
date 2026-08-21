@@ -359,6 +359,39 @@ ORDER BY 2 DESC;
 
     Si el usuario menciona solo la cadena (ej: "ventas de Éxito") o solo la ciudad (ej: "las tiendas de Cartagena") sin especificar una tienda puntual, el filtro con una sola palabra clave es correcto y va a traer **varias tiendas** — eso es lo esperado, no un error; agrupa por `"DESC_DEPENDENCIA"` para mostrar el desglose por tienda en vez de sumarlas todas en una sola cifra, salvo que el usuario pida explícitamente el total agregado.
 
+26. **Entidad descrita (no nombrada) y resuelta por subconsulta/CTE — SIEMPRE incluir su columna identificadora en el SELECT final**: cuando el usuario se refiere a algo por descripción en vez de nombrarlo (ej: "la tienda con más ventas", "el departamento que más creció", "la zona con menos ventas") y tu consulta lo resuelve con una subconsulta/CTE que después se usa como filtro (`WHERE "col" = (SELECT ...)`) para el resto de la query, esa entidad **no debe desaparecer del resultado final** — agrega su columna al SELECT final aunque el usuario no la haya pedido explícitamente. Si no la agregas, la respuesta puede decir "la tienda con más ventas" sin decir CUÁL, y quien pregunta se queda sin saber a qué corresponde el dato.
+
+    ```sql
+    -- Pregunta: "de la tienda con más ventas de Cartagena, la referencia más vendida de la última semana"
+
+    -- INCORRECTO: DESC_DEPENDENCIA se resuelve en tienda_top pero nunca sale en el SELECT final
+    WITH ventas_cartagena AS (...),
+    tienda_top AS (
+        SELECT "DESC_DEPENDENCIA" FROM ventas_cartagena
+        GROUP BY "DESC_DEPENDENCIA" ORDER BY SUM("CANTIDAD" * "PVP") DESC LIMIT 1
+    ),
+    ventas_ultima_semana AS (
+        SELECT UPPER(TRIM("REFERENCIA")) AS "REFERENCIA", SUM("CANTIDAD") AS "Unidades_Vendidas"
+        FROM ventas_cartagena
+        WHERE "DESC_DEPENDENCIA" = (SELECT "DESC_DEPENDENCIA" FROM tienda_top)
+          AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-08-14' AND '2026-08-21'
+        GROUP BY 1
+    )
+    SELECT "REFERENCIA", "Unidades_Vendidas" FROM ventas_ultima_semana ORDER BY "Unidades_Vendidas" DESC LIMIT 1;
+    -- ✗ el resultado no dice cuál fue "la tienda con más ventas"
+
+    -- CORRECTO: agrega la columna identificadora también en el CTE final y en el SELECT de salida
+    ventas_ultima_semana AS (
+        SELECT "DESC_DEPENDENCIA", UPPER(TRIM("REFERENCIA")) AS "REFERENCIA", SUM("CANTIDAD") AS "Unidades_Vendidas"
+        FROM ventas_cartagena
+        WHERE "DESC_DEPENDENCIA" = (SELECT "DESC_DEPENDENCIA" FROM tienda_top)
+          AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-08-14' AND '2026-08-21'
+        GROUP BY 1, 2
+    )
+    SELECT "DESC_DEPENDENCIA", "REFERENCIA", "Unidades_Vendidas" FROM ventas_ultima_semana ORDER BY "Unidades_Vendidas" DESC LIMIT 1;
+    ```
+    Aplica a cualquier entidad resuelta así (tienda, departamento, zona, línea, referencia, etc.) — no solo a `DESC_DEPENDENCIA`.
+
 
 ### Esquema de la tabla `ventas_2025` / `ventas_2026`
 
