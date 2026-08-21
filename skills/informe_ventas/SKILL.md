@@ -55,12 +55,12 @@ El orden de los bloques sigue el principio **macro → micro**: primero lo mas a
 4. **`"GRUPO_NORM"`**: columna normalizada de categoría de producto en `ventas_unificada`. SIEMPRE usar `"GRUPO_NORM"` en lugar de `"GRUPO"` cuando la tabla sea `ventas_unificada`.
 5. Devoluciones de cliente: `TRIM("DESC_MOVIMIENTO") = 'CAMBIOS DE MERCANCIA ACLIENTE'` — único movimiento que representa devolución real del consumidor final (signo `+`, entrada al almacén). `'DEVOLUCION AL PROVEEDOR'` es distinto: es devolución hacia el proveedor, no del cliente.
 6. Valor de venta: `"CANTIDAD" * "PVP"`. Nunca `"PVP LISTA"` para tiendas individuales.
-4. `"PVP LISTA"` solo cuando la pregunta sea sobre macroclientes/cadenas.
-5. Fechas: `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`. Nunca `::DATE` ni `'DD/MM/YYYY'` sin FM.
-6. Siempre `TRIM()` en `"SIGNO"`, `"DESC_MOVIMIENTO"`, `"DEPARTAMENTO"`, etc.
-7. **Jerarquía de producto**: `LINEA` → `LINEA_DETLL` → `ESTILO_ITEM` → `GRUPO`. Usar el nivel que corresponda.
-8. No usar: `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU`, `LLAVE_DEP`.
-9. Nunca inventar cifras. Si no hay dato: escribir "Sin informacion".
+7. `"PVP LISTA"` solo cuando la pregunta sea sobre macroclientes/cadenas.
+8. Fechas: `TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')`. Nunca `::DATE` ni `'DD/MM/YYYY'` sin FM.
+9. Siempre `TRIM()` en `"SIGNO"`, `"DESC_MOVIMIENTO"`, `"DEPARTAMENTO"`, etc.
+10. **Jerarquía de producto**: `LINEA` → `LINEA_DETLL` → `ESTILO_ITEM` → `GRUPO`. Usar el nivel que corresponda.
+11. No usar: `PVP HIST`, `PVP HIST LISTA`, `VENTA $ PVP HIST LISTA`, `FCH_ACT_PORTAFOLIO`, `FCH_ACT_SKU`, `LLAVE_DEP`.
+12. Nunca inventar cifras. Si no hay dato: escribir "Sin informacion".
 
 ---
 
