@@ -314,6 +314,13 @@ def _widget_feedback(prompt_id: str):
     """Widget de feedback debajo del último mensaje del asistente."""
     st.divider()
     st.caption(':material/rate_review: ¿Fue util esta respuesta?')
+    st.markdown(
+        '<span style="font-size:0.875rem; color:#f0d264;">'
+        'Recuerda que el chatbot se encuentra en etapa experimental y puede cometer errores, '
+        'por lo que realizar el feedback es vital para seguir mejorando la calidad del servicio.'
+        '</span>',
+        unsafe_allow_html=True,
+    )
 
     key_tipo = f'fb_tipo_{prompt_id}'
     st.session_state.setdefault(key_tipo, None)
@@ -372,6 +379,11 @@ def _mostrar_mensaje_asistente(respuesta: str, imagenes: list, ruta_excel: str, 
 if not st.session_state.messages:
     st.title('Consultor Inteligente de Ventas')
     st.markdown('Pregunta sobre ventas en lenguaje natural.')
+    st.warning(
+        'Este agente está en etapa EXPERIMENTAL y puede cometer errores. '
+        'Ninguna respuesta es DEFINITIVA: valida los datos importantes antes de tomar decisiones con ellos.',
+        icon=':material/warning:',
+    )
     seleccion = st.pills(
         'Sugerencias:',
         list(SUGERENCIAS.keys()),

@@ -133,7 +133,10 @@ async def _enviar_prompt_feedback(update, log_id: str) -> None:
         InlineKeyboardButton("👎 Malo",    callback_data=f"fb:malo:{log_id}"),
     ]])
     await update.message.reply_text(
-        "¿Fue útil esta respuesta?",
+        "¿Fue útil esta respuesta?\n\n"
+        "_Recuerda que el chatbot se encuentra en etapa experimental y puede cometer errores, "
+        "por lo que realizar el feedback es vital para seguir mejorando la calidad del servicio._",
+        parse_mode=ParseMode.MARKDOWN,
         reply_markup=keyboard,
     )
 
@@ -175,6 +178,8 @@ Soy un bot de análisis de datos que puede ayudarte con:
 • "Top 5 departamentos con más ingresos"
 • "Genera un informe de ventas del mes"
 • "Compara enero y febrero"
+
+{EMOJIS['warning']} *Aviso:* este agente está en etapa experimental y puede cometer errores. Ninguna respuesta es definitiva: valida los datos importantes antes de tomar decisiones con ellos.
 
 Escribe tu pregunta para comenzar {EMOJIS['search']}
         """
