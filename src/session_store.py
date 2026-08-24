@@ -21,11 +21,8 @@ MAX_TURNOS_HISTORIAL   = 3    # Turnos que el LLM puede leer
 MAX_DFS_ACTIVOS        = 5    # Límite duro de DataFrames simultáneos
 VENTANA_OBSOLESCENCIA  = 3    # Turnos sin uso → df candidato a limpieza
 MIN_DFS_PARA_LIMPIAR   = 3    # Solo limpiar si hay más de este número
-TTL_SESION_SEGUNDOS    = 3600 # 60 min sin actividad → sesión huérfana. Subido
-                               # temporalmente de 10 a 60 min para pruebas con
-                               # usuarios reales (la gente se distrae y vuelve);
-                               # considerar volver a bajarlo para uso normal en
-                               # producción — ver TTL_SESION_SEGUNDOS en
+TTL_SESION_SEGUNDOS    = 600  # 10 min sin actividad → sesión huérfana. Ver
+                               # TTL_SESION_SEGUNDOS en
                                # telegram_bot/session_manager.py, mismo valor.
 MAX_CHARS_PREGUNTA_LLM = 300  # Tope de la pregunta al serializarla para el LLM
                                # (no se trunca el valor almacenado en Turno,

@@ -11,10 +11,8 @@ from datetime import datetime
 # TTL de sesión — mismo valor que TTL_SESION_SEGUNDOS en src/session_store.py.
 # El agente está pensado para consultas puntuales, no sesiones largas: sin
 # esto, una sesión de Telegram vivía en memoria para siempre (solo se borraba
-# con /reset o al reiniciar el proceso del bot). Subido temporalmente de 10 a
-# 60 min para pruebas con usuarios reales — considerar volver a bajarlo para
-# uso normal en producción.
-TTL_SESION_SEGUNDOS = 3600  # 60 minutos sin actividad → sesión huérfana
+# con /reset o al reiniciar el proceso del bot).
+TTL_SESION_SEGUNDOS = 600  # 10 minutos sin actividad → sesión huérfana
 
 @dataclass
 class TelegramSession:
