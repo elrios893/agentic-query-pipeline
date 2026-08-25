@@ -106,7 +106,9 @@ Formato de respuesta:
   "operacion_sugerida": null,
   "parametros_sugeridos": null,
   "sub_preguntas": null,
-  "necesita_busqueda_web": false
+  "necesita_busqueda_web": false,
+  "relacion_tipo": "ninguna",
+  "relacion_descripcion": null
 }
 
 Si la ruta es SOBRE_DATOS, incluir también:
@@ -155,6 +157,35 @@ DETECCIÓN DE BÚSQUEDA WEB (necesita_busqueda_web):
   necesita_busqueda_web: true (la competencia NO está en la BD).
   Si el mensaje no menciona ni implica nada externo al negocio interno,
   "necesita_busqueda_web" es false.
+
+DETECCIÓN DE RELACIÓN ENTRE SUB-PREGUNTAS (relacion_tipo, relacion_descripcion):
+  Solo aplica cuando "sub_preguntas" tiene 2 o más elementos (si sub_preguntas
+  es null, relacion_tipo es SIEMPRE "ninguna"). El pipeline ejecuta cada
+  sub-pregunta como una consulta SQL 100% independiente — no comparten
+  contexto entre sí. Tu tarea es detectar si, ADEMÁS de estar en el mismo
+  mensaje, hay una hipótesis real de que una sub-pregunta pueda explicar,
+  compararse o depender de otra — para que el sistema pueda sintetizar esa
+  conexión después de calcular los resultados.
+  - "causal": el resultado de una sub-pregunta podría ser causa o explicación
+    del resultado de otra. Ej: "ventas de la tienda X en agosto y su
+    inventario en agosto" → la caída de ventas podría explicarse por el
+    inventario bajo.
+  - "comparativa": el usuario pide explícitamente comparar o contrastar los
+    resultados entre sí. Ej: "ventas de camisetas en Bogotá vs en Medellín".
+  - "secuencial": una sub-pregunta depende del resultado de otra para tener
+    sentido completo, o hay un orden temporal/lógico entre ellas. Ej: "top 3
+    tiendas del mes pasado y cómo les fue este mes".
+  - "ninguna": son pedidos empaquetados en un mismo mensaje SIN relación real
+    entre sí (el caso más común — el usuario solo aprovechó para pedir dos
+    cosas a la vez). Ej: "ventas de camisetas en Bogotá y el top 5 de tiendas
+    en Antioquia" → sin relación.
+  - "relacion_descripcion": SOLO si relacion_tipo no es "ninguna", una frase
+    breve (máx. 20 palabras) con la hipótesis concreta — quién podría explicar
+    a quién y por qué. Si relacion_tipo es "ninguna", va null.
+  IMPORTANTE: tú NO ves los datos reales, solo el texto de la pregunta — esto
+  es una HIPÓTESIS a verificar después contra las cifras, no una conclusión.
+  Ante la duda entre un tipo y "ninguna", prefiere "ninguna" — falsos
+  positivos generan análisis forzados que no aportan nada.
 """
 
 if _catalogo_tool_pandas is not None:
@@ -190,6 +221,7 @@ _JSON_SCHEMA_ENRUTADOR = {
             'ruta', 'confianza', 'razon', 'df_relevante',
             'operacion_sugerida', 'parametros_sugeridos', 'contexto_sql',
             'sub_preguntas', 'necesita_busqueda_web',
+            'relacion_tipo', 'relacion_descripcion',
         ],
         'properties': {
             'ruta':      {'type': 'string', 'enum': list(RUTAS)},
@@ -197,6 +229,11 @@ _JSON_SCHEMA_ENRUTADOR = {
             'razon':     {'type': 'string'},
             'df_relevante': {'type': ['string', 'null']},
             'necesita_busqueda_web': {'type': 'boolean'},
+            'relacion_tipo': {
+                'type': 'string',
+                'enum': ['causal', 'comparativa', 'secuencial', 'ninguna'],
+            },
+            'relacion_descripcion': {'type': ['string', 'null']},
             'sub_preguntas': {
                 'type': ['array', 'null'],
                 'items': {'type': 'string'},
@@ -260,6 +297,8 @@ def clasificar(
           'contexto_sql': str | None,
           'sub_preguntas': list[str] | None,
           'necesita_busqueda_web': bool,
+          'relacion_tipo': str,           # 'causal' | 'comparativa' | 'secuencial' | 'ninguna'
+          'relacion_descripcion': str,     # '' si relacion_tipo es 'ninguna'
         }
     """
     hay_historial = bool(contexto_sesion.get('historial'))
@@ -286,6 +325,8 @@ def clasificar(
             'contexto_sql':          None,
             'sub_preguntas':         None,
             'necesita_busqueda_web': False,
+            'relacion_tipo':         'ninguna',
+            'relacion_descripcion':  '',
         }
 
     # Si el cliente no está disponible → fallback a regex simple
@@ -315,6 +356,12 @@ def clasificar(
         print(f'  [enrutador] {resultado["ruta"]} (confianza: {resultado["confianza"]}) — {resultado["razon"]}')
         if resultado['necesita_busqueda_web']:
             print(f'  [enrutador] necesita_busqueda_web=True')
+        # Se imprime siempre que aplica (2+ sub_preguntas), incluyendo "ninguna"
+        # — trazabilidad de que la clasificación corrió, no solo cuando detecta
+        # algo (a diferencia de necesita_busqueda_web, que solo importa en True).
+        if resultado['sub_preguntas'] and len(resultado['sub_preguntas']) >= 2:
+            desc = f' — {resultado["relacion_descripcion"]}' if resultado['relacion_descripcion'] else ''
+            print(f'  [enrutador] relacion_tipo={resultado["relacion_tipo"]}{desc}')
         return resultado
 
     except Exception as e:
@@ -376,6 +423,15 @@ def _parsear_respuesta(texto: str) -> dict:
     if ruta not in RUTAS:
         ruta = 'NUEVA_CONSULTA'
 
+    sub_preguntas = data.get('sub_preguntas') or None
+    relacion_tipo = (data.get('relacion_tipo') or 'ninguna').strip().lower()
+    if relacion_tipo not in ('causal', 'comparativa', 'secuencial', 'ninguna'):
+        relacion_tipo = 'ninguna'
+    # Solo tiene sentido con 2+ sub_preguntas — si el modelo lo marcó igual
+    # sobre una sola pregunta (o ninguna), se descarta como ruido.
+    if not sub_preguntas or len(sub_preguntas) < 2:
+        relacion_tipo = 'ninguna'
+
     return {
         'ruta':                  ruta,
         'confianza':             data.get('confianza', 'media'),
@@ -384,8 +440,10 @@ def _parsear_respuesta(texto: str) -> dict:
         'operacion_sugerida':    data.get('operacion_sugerida'),
         'parametros_sugeridos':  data.get('parametros_sugeridos'),
         'contexto_sql':          data.get('contexto_sql'),
-        'sub_preguntas':         data.get('sub_preguntas') or None,
+        'sub_preguntas':         sub_preguntas,
         'necesita_busqueda_web': bool(data.get('necesita_busqueda_web', False)),
+        'relacion_tipo':         relacion_tipo,
+        'relacion_descripcion':  (data.get('relacion_descripcion') or '') if relacion_tipo != 'ninguna' else '',
     }
 
 
@@ -444,4 +502,6 @@ def _fallback_ruta(ruta: str, razon: str) -> dict:
         'contexto_sql':          None,
         'sub_preguntas':         None,
         'necesita_busqueda_web': False,
+        'relacion_tipo':         'ninguna',
+        'relacion_descripcion':  '',
     }

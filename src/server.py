@@ -55,6 +55,7 @@ from src.orquestador import (
     _es_comando_analisis,
     quiere_excel,
     exportar_excel_multi_hoja,
+    analizar_relacion_subconsultas,
 )
 from src.prompt_logger import registrar_prompt, actualizar_feedback
 from tools.tool_pandas import ejecutar_operacion, catalogo_para_llm
@@ -191,7 +192,9 @@ def chat(req: ChatRequest):
                     # consulta en vez de forzarlas todas en una sola tabla.
                     # Ver _procesar_multi_consulta.
                     resultado = _procesar_multi_consulta(
-                        sub_preguntas, contexto_ref, session_id, pregunta, contexto_web=bloque_web
+                        sub_preguntas, contexto_ref, session_id, pregunta, contexto_web=bloque_web,
+                        relacion_tipo=clasificacion.get('relacion_tipo', 'ninguna'),
+                        relacion_descripcion=clasificacion.get('relacion_descripcion', ''),
                     )
                     tipo      = 'consulta'
                 else:
@@ -460,6 +463,8 @@ def _procesar_multi_consulta(
     session_id: str,
     pregunta_original: str = '',
     contexto_web: str = '',
+    relacion_tipo: str = 'ninguna',
+    relacion_descripcion: str = '',
 ) -> dict:
     """
     Ejecuta cada sub-pregunta detectada por el enrutador (clasificacion['sub_preguntas'])
@@ -497,8 +502,17 @@ def _procesar_multi_consulta(
     partida en dos sub-preguntas); si ninguna sub-pregunta matchea por texto
     propio pero el mensaje original sí necesitaba web, se adjunta a la última
     (evita repetir el bloque en cada tabla cuando claramente aplica a una sola).
+
+    relacion_tipo/relacion_descripcion vienen del enrutador (clasificacion['relacion_tipo']) —
+    una hipótesis de que una sub-pregunta puede explicar/compararse/depender de otra (ver
+    DETECCIÓN DE RELACIÓN ENTRE SUB-PREGUNTAS en enrutador_sesion.py). Si no es 'ninguna', al
+    final —con TODOS los resultados ya calculados— se llama a analizar_relacion_subconsultas
+    (OpenRouter) para contrastar la hipótesis contra las cifras reales y, si se sostiene, se
+    agrega como una sección extra al final de la respuesta. Es best-effort: si falla o no hay
+    cliente configurado, se omite sin afectar el resto de la respuesta.
     """
     respuestas       = []
+    sub_resultados_texto = []  # [{'pregunta', 'respuesta'}] para analizar_relacion_subconsultas
     imagenes         = []
     sql_queries      = []
     dfs_creados      = []
@@ -529,7 +543,9 @@ def _procesar_multi_consulta(
         filas = (resultado_sql_sub or {}).get('total_filas', 0)
         print(f'[SERVER] Sub-consulta {i}/{n} completada — {filas} fila(s).')
 
-        respuestas.append(f'### {i}. {sub}\n\n{resultado.get("respuesta", "")}')
+        respuesta_sub = resultado.get('respuesta', '')
+        respuestas.append(f'### {i}. {sub}\n\n{respuesta_sub}')
+        sub_resultados_texto.append({'pregunta': sub, 'respuesta': respuesta_sub})
         imagenes.extend(resultado.get('imagenes', []))
 
         if quiere_excel(sub, resultado_sql_sub or {}):
@@ -551,6 +567,18 @@ def _procesar_multi_consulta(
         sql_usada     = resultado.get('sql_usada')
 
     respuesta_final = '\n\n---\n\n'.join(respuestas)
+
+    print(f'[SERVER] relacion_tipo recibido del enrutador: {relacion_tipo}'
+          + (f' — {relacion_descripcion}' if relacion_descripcion else ''))
+    if relacion_tipo != 'ninguna':
+        texto_relacion = analizar_relacion_subconsultas(
+            pregunta_original, relacion_tipo, relacion_descripcion, sub_resultados_texto,
+        )
+        if texto_relacion:
+            respuesta_final += f'\n\n---\n\n**Relación entre los resultados:** {texto_relacion}'
+            print(f'[SERVER] Análisis relacional agregado ({len(texto_relacion)} caracteres).')
+        else:
+            print('[SERVER] Análisis relacional omitido (sin cliente/error/no confirmable).')
 
     ruta_excel = ''
     if candidatos_excel:

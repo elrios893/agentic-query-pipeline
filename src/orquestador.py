@@ -62,6 +62,24 @@ try:
 except Exception:
     _client_inference = None
 
+# ---------------------------------------------------------------------------
+# Cliente dedicado a sintetizar la relación entre sub-preguntas — vía
+# OpenRouter, independiente del PROVIDER principal (mismo patrón que el
+# cliente de clasificación de arriba, que siempre usa Groq sin importar el
+# provider configurado). Modelo configurable por si el free-tier de
+# OpenRouter rota disponibilidad (ver análisis_relacion_subconsultas): es una
+# llamada de valor agregado, no crítica — si falla, se omite sin romper nada.
+# ---------------------------------------------------------------------------
+OPENROUTER_MODEL = os.getenv('OPENROUTER_MODEL', 'nvidia/nemotron-3-super-120b-a12b:free')
+try:
+    from openai import OpenAI as _OpenAIClassRelacion
+    _openrouter_key = os.getenv('OPENROUTER_API_KEY')
+    _client_relacion = _OpenAIClassRelacion(
+        api_key=_openrouter_key, base_url='https://openrouter.ai/api/v1',
+    ) if _openrouter_key else None
+except Exception:
+    _client_relacion = None
+
 BASE_DIR = Path(__file__).resolve().parent.parent
 AGENTS_DIR = BASE_DIR / 'agents'
 TOOLS_DIR = BASE_DIR / 'tools'
@@ -735,6 +753,88 @@ def llamar_llm(system_prompt: str, user_prompt: str, temperatura: float = 0.1) -
                 time.sleep(pausa)
             else:
                 raise
+
+def analizar_relacion_subconsultas(
+    pregunta_original: str,
+    relacion_tipo: str,
+    relacion_descripcion: str,
+    sub_resultados: list[dict],
+) -> str:
+    """
+    Sintetiza en 2-4 frases la relación entre los resultados de varias
+    sub-consultas cuando el enrutador detectó una hipótesis de relación
+    ('causal' | 'comparativa' | 'secuencial') entre ellas — ej. una caída de
+    ventas y un inventario bajo en la misma tienda/período, que hoy corren
+    como consultas 100% independientes y nunca se conectan en la respuesta.
+
+    El enrutador solo vio el TEXTO de la pregunta, no los datos reales, así
+    que relacion_tipo/relacion_descripcion es una HIPÓTESIS a contrastar, no
+    un hecho — el prompt le pide al modelo confirmarla o descartarla contra
+    las cifras ya calculadas, nunca forzarla (ver DETECCIÓN DE RELACIÓN ENTRE
+    SUB-PREGUNTAS en enrutador_sesion.py).
+
+    Corre en OpenRouter (modelo gratuito, OPENROUTER_MODEL) en vez del
+    PROVIDER principal — es una llamada de valor agregado: si el cliente no
+    está configurado o la llamada falla (free-tier saturado, etc.), retorna
+    '' y el flujo normal de la respuesta no se ve afectado.
+
+    Args:
+        pregunta_original: mensaje completo del usuario, como contexto.
+        relacion_tipo: 'causal' | 'comparativa' | 'secuencial' (ya filtrado
+            de 'ninguna' por el caller).
+        relacion_descripcion: hipótesis breve del enrutador.
+        sub_resultados: [{'pregunta': str, 'respuesta': str}, ...] — las
+            respuestas YA redactadas en lenguaje natural de cada sub-consulta
+            (más compacto y barato que reenviar el JSON crudo de cada una).
+
+    Returns:
+        Texto de 2-4 frases listo para insertar en la respuesta, o '' si no
+        aplica o la llamada falla.
+    """
+    if not _client_relacion or relacion_tipo not in ('causal', 'comparativa', 'secuencial'):
+        return ''
+    if len(sub_resultados) < 2:
+        return ''
+
+    system = (
+        'Eres un analista de datos de retail (Creytex / Almacenes Éxito). Recibes varias '
+        'sub-consultas ya resueltas que vinieron de UN solo mensaje del usuario, y una '
+        'hipótesis de relación entre ellas generada por un clasificador que NO vio los '
+        'datos reales, solo el texto de la pregunta. Tu trabajo es contrastar esa '
+        'hipótesis contra las cifras ya calculadas:\n'
+        '- Si los números realmente la respaldan, explica la conexión en 2-4 frases con '
+        'lenguaje de probabilidad ("es probable que...", "esto sugiere que...") — nunca '
+        'la presentes como certeza absoluta, no tienes significancia estadística.\n'
+        '- Si los números NO la respaldan o no hay evidencia suficiente, dilo '
+        'explícitamente en 1-2 frases y no fuerces una conclusión.\n'
+        'Responde SOLO con ese texto en español, sin encabezados, JSON ni comillas.'
+    )
+    bloque_sub = '\n\n'.join(
+        f'Sub-pregunta {i}: {sr["pregunta"]}\nResultado {i}: {sr["respuesta"]}'
+        for i, sr in enumerate(sub_resultados, start=1)
+    )
+    user = (
+        f'Pregunta original del usuario: "{pregunta_original}"\n\n'
+        f'Hipótesis de relación (tipo={relacion_tipo}): {relacion_descripcion}\n\n'
+        f'{bloque_sub}\n\n'
+        'Contrasta la hipótesis contra estos resultados y responde.'
+    )
+
+    try:
+        resp = _client_relacion.chat.completions.create(
+            model=OPENROUTER_MODEL,
+            messages=[
+                {'role': 'system', 'content': system},
+                {'role': 'user', 'content': user},
+            ],
+            temperature=0.3,
+            timeout=15,
+        )
+        return limpiar_texto(resp.choices[0].message.content.strip())
+    except Exception as e:
+        print(f'[ANALISIS_RELACIONAL] Error ({OPENROUTER_MODEL}): {e!r} — se omite el bloque.')
+        return ''
+
 
 def extraer_sql(texto: str) -> str:
     bloques = re.findall(r'```sql\s*(.*?)\s*```', texto, re.DOTALL | re.IGNORECASE)
