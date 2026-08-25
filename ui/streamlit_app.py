@@ -313,9 +313,9 @@ def ejecutar_pregunta(pregunta: str) -> tuple[str, list[str], bool, bool, str]:
 def _widget_feedback(prompt_id: str):
     """Widget de feedback debajo del último mensaje del asistente."""
     st.divider()
-    st.caption(':material/rate_review: ¿Fue util esta respuesta?')
+    st.caption(':material/rate_review: **¿Fue util esta respuesta?**')
     st.markdown(
-        '<span style="font-size:0.875rem; color:#f0d264;">'
+        '<span style="font-size:0.875rem; color:red; font-weight:bold;">'
         'Recuerda que el chatbot se encuentra en etapa experimental y puede cometer errores, '
         'por lo que realizar el feedback es vital para seguir mejorando la calidad del servicio.'
         '</span>',
