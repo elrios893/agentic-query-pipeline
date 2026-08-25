@@ -27,6 +27,18 @@ DOMINIOS_EXCLUIDOS = [
 # descartan aunque hayan venido en la respuesta — suelen ser ruido.
 SCORE_MINIMO = 0.35
 
+# Filtro DURO de recencia a nivel de API (no solo el año en el texto de la
+# query, que Tavily solo usa como señal de relevancia, no como filtro): sin
+# esto, preguntas de tendencias/mercado devolvían con frecuencia noticias de
+# 2–3 años atrás que seguían rankeando alto por coincidencia de keywords.
+# Valores válidos de Tavily: 'day' | 'week' | 'month' | 'year'.
+TIME_RANGE = 'year'
+
+# Boost (no filtro estricto) de resultados originados en Colombia — el
+# negocio (Creytex / Almacenes Éxito) opera ahí. Solo aplica con
+# topic='general' (default), que es el que usa esta búsqueda.
+PAIS_BOOST = 'colombia'
+
 
 def buscar_web(query: str, max_resultados: int = 5) -> list[dict]:
     """
@@ -57,8 +69,13 @@ def buscar_web(query: str, max_resultados: int = 5) -> list[dict]:
         'search_depth': 'advanced',
         'max_results': max(max_resultados * 2, 8),  # pedir de más: luego se filtra
         'exclude_domains': DOMINIOS_EXCLUIDOS,
+        'time_range': TIME_RANGE,
+        'country': PAIS_BOOST,
     }
-    print(f'[buscar_web] POST {TAVILY_URL} — query={query!r} search_depth=advanced excluye={DOMINIOS_EXCLUIDOS}')
+    print(
+        f'[buscar_web] POST {TAVILY_URL} — query={query!r} search_depth=advanced '
+        f'time_range={TIME_RANGE} country={PAIS_BOOST} excluye={DOMINIOS_EXCLUIDOS}'
+    )
 
     try:
         resp = requests.post(TAVILY_URL, json=payload, timeout=20)

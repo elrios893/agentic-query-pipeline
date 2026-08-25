@@ -2284,6 +2284,7 @@ def procesar_consulta(
     pregunta: str,
     contexto_refinamiento: dict | None = None,
     permitir_excel_individual: bool = True,
+    contexto_web: str = '',
 ):
     """
     Pipeline principal de consulta.
@@ -2303,6 +2304,12 @@ def procesar_consulta(
             aunque la pregunta lo pida — usado por server.py::_procesar_multi_consulta,
             que combina el Excel de varias sub-preguntas en un solo archivo de
             varias hojas en vez de dejar que cada una genere el suyo.
+        contexto_web: bloque de texto ya formateado con resultados de búsqueda
+            web (o '' si no aplica), calculado por server.py ANTES de llamar
+            a esta función — procesar_consulta no decide si buscar en internet,
+            solo inyecta el resultado en el prompt del redactor si se lo pasan.
+            El redactor ya sabe interpretar esta sección (ver regla 7 de
+            redactor_respuesta.md, cargada siempre, no solo en modo conversacional).
 
     Retorna:
         {
@@ -2397,10 +2404,15 @@ explícitamente pida cambiarlos.
         imagenes_chat = generar_graficos_consulta(resultado, pregunta, timestamp_graf)
 
     # ------------------------------------------------------------------
-    # Formatear como tabla si es una solicitud de tabla
+    # Formatear como tabla si es una solicitud de tabla, o si el resultado
+    # ya es tabular por su forma (varias filas, o una sola fila con varias
+    # columnas/metricas) -- una tabla es mas legible y estetica que texto
+    # plano separado por comas, independientemente de si el usuario usó
+    # una palabra como "tabla"/"top N" al preguntar.
     # ------------------------------------------------------------------
     tabla_markdown = ''
-    if es_intencion_tabla(pregunta) and resultado.get('rows'):
+    es_tabular = len(resultado.get('rows', [])) > 1 or len(resultado.get('columns', [])) > 2
+    if (es_intencion_tabla(pregunta) or es_tabular) and resultado.get('rows'):
         tabla_markdown = formatear_resultado_como_tabla(resultado)
 
     # ------------------------------------------------------------------
@@ -2504,11 +2516,25 @@ explícitamente pida cambiarlos.
     if excel_auto:
         prompt_red += f'\n\n### Nota de datos completos\nLa consulta devolvio {total_filas} filas en total. Arriba se muestra una muestra representativa (no necesariamente las primeras) para la respuesta. El archivo completo se ha exportado a Excel: {ruta_excel}\nIncluir en la respuesta: "Mostrando una muestra representativa de {total_filas} filas totales. El listado completo se exportó a Excel en: {ruta_excel}"'
     if tabla_markdown:
-        prompt_red += '\n\n### Tabla de Resultados\n' + tabla_markdown + '\n\nPor favor, incluir esta tabla en la respuesta.'
+        prompt_red += (
+            '\n\n### Tabla de Resultados\n' + tabla_markdown +
+            '\n\nIncluye esta tabla en la respuesta TAL CUAL — es la única forma en que deben '
+            'presentarse estas filas. NO repitas los mismos datos como lista numerada ni como '
+            'párrafo antes o después de la tabla (ni "1. Éxito Antioquia — 1,200 unidades..."): '
+            'eso duplica la información y desperdicia espacio. Antes de la tabla, en vez de una '
+            'frase seca de "aquí están los datos", cuenta brevemente la historia que cuentan '
+            'esas cifras (quién lidera, qué tan grande es la brecha con el resto, qué tan '
+            'concentrado o disperso está el resultado) en 1-2 frases que le den sentido a lo '
+            'que el usuario va a leer, sin adelantar cada fila una por una. Después de la '
+            'tabla, como máximo 1-2 líneas de insight adicional (qué destaca), nunca una '
+            'relectura fila por fila de lo que ya está en la tabla.'
+        )
     if imagenes_chat:
         prompt_red += '\n\n### Grafico generado\n' + '\n'.join(imagenes_chat) + '\n\nSi hay un grafico, incluirlo en la respuesta como imagen markdown.'
     if ruta_excel and not excel_auto:
         prompt_red += f'\n\n### Archivo Excel generado\nEl archivo Excel se ha guardado en: {ruta_excel}\nInformar al usuario que puede descargarlo desde esa ruta.'
+    if contexto_web:
+        prompt_red += contexto_web
 
     respuesta_final = llamar_llm(
         system_red,

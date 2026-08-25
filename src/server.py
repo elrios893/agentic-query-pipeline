@@ -15,6 +15,7 @@ import sys
 import os
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -41,7 +42,7 @@ if str(SRC_DIR) not in sys.path:
 # ---------------------------------------------------------------------------
 # Imports internos
 # ---------------------------------------------------------------------------
-from src.session_store import store, Turno
+from src.session_store import store, Turno, MAX_BUSQUEDAS_WEB_SESION
 from src.enrutador_sesion import clasificar
 from src.orquestador import (
     procesar_consulta,
@@ -167,20 +168,37 @@ def chat(req: ChatRequest):
                 contexto_ref = _construir_contexto_refinamiento(session_id, clasificacion)
 
             sub_preguntas = clasificacion.get('sub_preguntas')
-            if sub_preguntas:
-                # El enrutador detectó varias consultas independientes en un
-                # mismo mensaje (ej. "una tabla de X y otra de Y") — cada una
-                # corre por el pipeline normal de una sola consulta en vez de
-                # forzarlas todas en una sola tabla. Ver _procesar_multi_consulta.
-                resultado = _procesar_multi_consulta(sub_preguntas, contexto_ref, session_id, pregunta)
-                tipo      = 'consulta'
-            elif es_intencion_informe(pregunta):
+            if not sub_preguntas and es_intencion_informe(pregunta):
+                # El informe (.docx) tiene su propio flujo de redacción que
+                # todavía no consume contexto_web — no tiene sentido gastar
+                # una búsqueda del cupo de la sesión para un resultado que se
+                # va a descartar. Ver generar_informe si se quiere sumarlo.
                 resultado = generar_informe(pregunta)
                 tipo      = 'informe'
                 ruta_docx = resultado.get('ruta_docx', '')
             else:
-                resultado = procesar_consulta(pregunta, contexto_refinamiento=contexto_ref)
-                tipo      = resultado.get('tipo', 'consulta')
+                # Se resuelve UNA sola vez para todo el turno (respeta el
+                # límite por sesión) y se reparte según la rama — ver
+                # _procesar_multi_consulta para cómo se distribuye entre
+                # sub-preguntas.
+                bloque_web = _resolver_busqueda_web(
+                    pregunta, contexto, session_id, clasificacion.get('necesita_busqueda_web', False)
+                )
+                if sub_preguntas:
+                    # El enrutador detectó varias consultas independientes en
+                    # un mismo mensaje (ej. "una tabla de X y otra de Y") —
+                    # cada una corre por el pipeline normal de una sola
+                    # consulta en vez de forzarlas todas en una sola tabla.
+                    # Ver _procesar_multi_consulta.
+                    resultado = _procesar_multi_consulta(
+                        sub_preguntas, contexto_ref, session_id, pregunta, contexto_web=bloque_web
+                    )
+                    tipo      = 'consulta'
+                else:
+                    resultado = procesar_consulta(
+                        pregunta, contexto_refinamiento=contexto_ref, contexto_web=bloque_web
+                    )
+                    tipo      = resultado.get('tipo', 'consulta')
 
             respuesta_txt = resultado.get('respuesta', '')
             imagenes      = resultado.get('imagenes', [])
@@ -208,7 +226,10 @@ def chat(req: ChatRequest):
             # activo. Puede escalar a una consulta SQL nueva si le hace falta
             # un dato que no está en sesión (ver _manejar_conversacional).
             # ----------------------------------------------------------------
-            resultado_conv = _manejar_conversacional(pregunta, contexto, session_id)
+            bloque_web = _resolver_busqueda_web(
+                pregunta, contexto, session_id, clasificacion.get('necesita_busqueda_web', False)
+            )
+            resultado_conv = _manejar_conversacional(pregunta, contexto, session_id, bloque_web)
             if resultado_conv['escalado']:
                 resultado     = resultado_conv['resultado']
                 tipo          = resultado.get('tipo', 'consulta')
@@ -438,6 +459,7 @@ def _procesar_multi_consulta(
     contexto_ref: dict | None,
     session_id: str,
     pregunta_original: str = '',
+    contexto_web: str = '',
 ) -> dict:
     """
     Ejecuta cada sub-pregunta detectada por el enrutador (clasificacion['sub_preguntas'])
@@ -467,6 +489,14 @@ def _procesar_multi_consulta(
     varios) — solo importan para el flujo de REFINAMIENTO de un turno futuro
     que no especifique a cuál de los N resultados se refiere; no afecta la
     respuesta que ve el usuario en este turno, que sí incluye las N tablas.
+
+    contexto_web (si no es '') es el bloque ya resuelto por
+    _resolver_busqueda_web para el mensaje completo — se adjunta solo a la(s)
+    sub-pregunta(s) cuyo texto matchea es_intencion_busqueda_web (ej. la parte
+    de "competencia" en "ventas de camisetas y compáralas con la competencia"
+    partida en dos sub-preguntas); si ninguna sub-pregunta matchea por texto
+    propio pero el mensaje original sí necesitaba web, se adjunta a la última
+    (evita repetir el bloque en cada tabla cuando claramente aplica a una sola).
     """
     respuestas       = []
     imagenes         = []
@@ -481,13 +511,18 @@ def _procesar_multi_consulta(
     for i, sub in enumerate(sub_preguntas, start=1):
         print(f'  {i}. {sub}')
 
+    matches_web = [es_intencion_busqueda_web(s) for s in sub_preguntas]
+    ninguna_matchea_propia = bool(contexto_web) and not any(matches_web)
+
     for i, sub in enumerate(sub_preguntas, start=1):
         print(f'\n{"-"*60}')
         print(f'[SERVER] Sub-consulta {i}/{n}: "{sub}"')
         print(f'{"-"*60}')
 
+        web_sub = contexto_web if (matches_web[i - 1] or (ninguna_matchea_propia and i == n)) else ''
         resultado = procesar_consulta(
             sub, contexto_refinamiento=contexto_ref, permitir_excel_individual=False,
+            contexto_web=web_sub,
         )
         resultado_sql_sub = resultado.get('resultado_sql')
 
@@ -690,7 +725,59 @@ _MARCADOR_CALCULAR = '[[CALCULAR]]'
 _MARCADOR_ESCALAR  = '[[ESCALAR_A_CONSULTA]]'
 
 
-def _manejar_conversacional(pregunta: str, contexto: dict, session_id: str) -> dict:
+def _resolver_busqueda_web(
+    pregunta: str, contexto: dict, session_id: str, necesita_web_router: bool,
+) -> str:
+    """
+    Decide si corresponde salir a internet — combinando la señal por regex
+    (es_intencion_busqueda_web, frases explícitas tipo "según internet") con
+    la señal del enrutador LLM (clasificacion['necesita_busqueda_web'], que
+    puede detectar intención web aunque la ruta principal sea NUEVA_CONSULTA
+    o REFINAMIENTO, ej: "ventas de camisetas y compáralas con la competencia").
+
+    Aplica el límite MAX_BUSQUEDAS_WEB_SESION antes de llamar a Tavily (cada
+    llamada es una petición paga) y devuelve el bloque de texto ya formateado
+    para inyectar en el prompt del redactor ('' si no aplica ninguna búsqueda).
+    """
+    necesita_web_regex = es_intencion_busqueda_web(pregunta)
+    necesita_web = necesita_web_regex or necesita_web_router
+    print(
+        f'[BUSQUEDA_WEB] regex={"SI" if necesita_web_regex else "NO"} '
+        f'enrutador={"SI" if necesita_web_router else "NO"} → '
+        f'{"SI" if necesita_web else "NO"} — pregunta: "{pregunta}"'
+    )
+    if not necesita_web:
+        return ''
+
+    if not store.puede_buscar_web(session_id):
+        print(
+            f'[BUSQUEDA_WEB] límite de {MAX_BUSQUEDAS_WEB_SESION} búsquedas '
+            f'alcanzado para session={session_id[:8]}... — se omite la búsqueda.'
+        )
+        return (
+            '\n\nBúsqueda web: se alcanzó el límite de búsquedas externas '
+            'permitidas para esta sesión. Responde solo con los datos internos '
+            'disponibles y acláraselo brevemente al usuario si es relevante.\n'
+        )
+
+    query_web = _generar_query_busqueda_web(pregunta, contexto)
+    print(f'[BUSQUEDA_WEB] query generada: "{query_web}"')
+    resultados_web = buscar_web(query_web)
+    store.registrar_busqueda_web(session_id)
+    print(f'[BUSQUEDA_WEB] {len(resultados_web)} resultado(s)')
+    for i, r in enumerate(resultados_web):
+        print(f'  [{i}] {r.get("titulo", "")[:80]} — {r.get("url", "")}')
+        print(f'      contenido[:200]: {r.get("contenido", "")[:200]!r}')
+
+    if resultados_web:
+        return (
+            f'\n\nResultados de búsqueda web (fuentes externas, query: "{query_web}"):\n'
+            f'{json.dumps(resultados_web, ensure_ascii=False)}\n'
+        )
+    return f'\n\nBúsqueda web (query: "{query_web}"): no se encontraron resultados.\n'
+
+
+def _manejar_conversacional(pregunta: str, contexto: dict, session_id: str, bloque_web: str = '') -> dict:
     """
     Responde preguntas conversacionales usando el historial + un digest
     estadístico sobre TODAS las filas del df activo (no solo metadata).
@@ -727,27 +814,6 @@ def _manejar_conversacional(pregunta: str, contexto: dict, session_id: str) -> d
                 f'\n\nDigest estadístico completo de "{df_reciente.nombre}" '
                 f'(sobre las {df_reciente.total_filas} filas reales, no una muestra):\n'
                 f'{json.dumps(digest, ensure_ascii=False, indent=2)}\n'
-            )
-
-    bloque_web = ''
-    necesita_web = es_intencion_busqueda_web(pregunta)
-    print(f'[CONVERSACIONAL] busqueda_web={"SI" if necesita_web else "NO"} — pregunta: "{pregunta}"')
-    if necesita_web:
-        query_web = _generar_query_busqueda_web(pregunta, contexto)
-        print(f'[CONVERSACIONAL] query_web generada: "{query_web}"')
-        resultados_web = buscar_web(query_web)
-        print(f'[CONVERSACIONAL] resultados_web: {len(resultados_web)} resultado(s)')
-        for i, r in enumerate(resultados_web):
-            print(f'  [{i}] {r.get("titulo", "")[:80]} — {r.get("url", "")}')
-            print(f'      contenido[:200]: {r.get("contenido", "")[:200]!r}')
-        if resultados_web:
-            bloque_web = (
-                f'\n\nResultados de búsqueda web (fuentes externas, query: "{query_web}"):\n'
-                f'{json.dumps(resultados_web, ensure_ascii=False)}\n'
-            )
-        else:
-            bloque_web = (
-                f'\n\nBúsqueda web (query: "{query_web}"): no se encontraron resultados.\n'
             )
 
     prompt = (
@@ -821,16 +887,33 @@ def _generar_query_busqueda_web(pregunta: str, contexto: dict) -> str:
 
     print(f'[CONVERSACIONAL] contexto para query_web:\n{contexto_str}')
 
+    anio_actual = datetime.now().year
+
     system = (
-        'Conviertes la pregunta de un usuario en UNA sola query de búsqueda web, concreta y específica. '
+        'Conviertes la pregunta de un usuario en UNA sola query de búsqueda web, concreta y específica, '
+        'para el sector TEXTIL Y DE MODA (la empresa es Creytex, fabricante/proveedor de prendas de vestir '
+        'para el retail colombiano — Almacenes Éxito). La query SIEMPRE debe quedar ubicada en ese sector: '
+        'agrega términos como "moda", "textil", "confección", "prendas de vestir" o "retail de moda" según '
+        'aplique — nunca generes una query genérica de economía/mercado que podría devolver resultados de '
+        'cualquier industria. '
+        'Ubica también la región: usa Colombia por defecto (el negocio opera ahí) salvo que la pregunta o el '
+        'contexto mencionen explícitamente otro país o mercado (ej. "mercado chino" → producción/exportación '
+        'textil de China e impacto en importaciones a Colombia, no economía china en general). '
+        f'Ancla la query al año {anio_actual} (o "{anio_actual}-{str(anio_actual + 1)[2:]}" si se trata de una '
+        'temporada/colección) para priorizar información reciente — la búsqueda ya filtra resultados del '
+        'último año, pero incluir el año en el texto ayuda a que el resultado sea sobre el presente, no una '
+        'noticia vieja de otro año que solo coincide en palabras clave. '
         'Usa el contexto interno entregado (categorías, líneas de producto, referencias, cifras, período, país/región) '
-        'para reemplazar referencias vagas como "esto", "las tendencias internas" o "eso" por los términos reales. '
-        'NUNCA incluyas cifras de ventas internas ni nombres de la empresa en la query — la query es para buscar '
+        'para reemplazar referencias vagas como "esto", "las tendencias internas" o "eso" por los términos reales — '
+        'ej. si el contexto menciona "camisetas manga corta" o "línea Dama Deportivo", inclúyelo tal cual en vez '
+        'de generalizarlo a "ropa". '
+        'NUNCA incluyas cifras de ventas internas ni el nombre de la empresa en la query — la query es para buscar '
         'información pública externa (tendencias de mercado, sector, competencia), no datos propios. '
         'Responde SOLO con la query de búsqueda en texto plano, sin comillas ni explicación, máximo 20 palabras.'
     )
     prompt = (
         f'Pregunta del usuario: "{pregunta}"\n\n'
+        f'Año actual: {anio_actual}\n\n'
         f'Contexto interno de la sesión (úsalo solo para identificar QUÉ términos concretos buscar, '
         f'no los incluyas como datos en la query):\n{contexto_str}\n\n'
         f'Genera la query de búsqueda web.'
@@ -847,7 +930,14 @@ def _generar_query_busqueda_web(pregunta: str, contexto: dict) -> str:
 
 
 def _construir_query_busqueda_web_fallback(pregunta: str, contexto: dict) -> str:
-    """Fallback sin LLM: concatena la pregunta con el turno y df más recientes."""
+    """
+    Fallback sin LLM: concatena la pregunta con el turno y df más recientes.
+    Se agrega "sector textil moda Colombia <año actual>" al final para que,
+    aun sin el LLM afinando la query, Tavily no devuelva resultados de una
+    industria distinta al negocio ni de un año viejo que solo coincide en
+    palabras clave (ver _generar_query_busqueda_web para el criterio completo;
+    el filtro duro de recencia va en tools/buscar_web.py vía time_range).
+    """
     partes = [pregunta]
     historial = contexto.get('historial', [])
     if historial:
@@ -855,6 +945,7 @@ def _construir_query_busqueda_web_fallback(pregunta: str, contexto: dict) -> str
     dfs = contexto.get('dataframes_activos', [])
     if dfs:
         partes.append(dfs[-1].get('descripcion', ''))
+    partes.append(f'sector textil moda Colombia {datetime.now().year}')
     return ' '.join(p for p in partes if p).strip()
 
 

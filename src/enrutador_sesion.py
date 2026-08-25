@@ -105,7 +105,8 @@ Formato de respuesta:
   "df_relevante": null,
   "operacion_sugerida": null,
   "parametros_sugeridos": null,
-  "sub_preguntas": null
+  "sub_preguntas": null,
+  "necesita_busqueda_web": false
 }
 
 Si la ruta es SOBRE_DATOS, incluir también:
@@ -141,6 +142,19 @@ DETECCIÓN DE MÚLTIPLES CONSULTAS (sub_preguntas):
     caben en una tabla (ej: "ventas por tienda y por línea" puede ser ambiguo,
     pero "top 5 tiendas de Bogotá" con un solo filtro NO se separa).
   - Si solo hay una intención, "sub_preguntas" es null.
+
+DETECCIÓN DE BÚSQUEDA WEB (necesita_busqueda_web):
+  La base de datos SOLO tiene ventas internas de Creytex. Si el mensaje pide o
+  implica información que NO puede existir ahí — tendencias de mercado,
+  competencia, precios de otras marcas, noticias del sector, moda/temporadas
+  externas — marca "necesita_busqueda_web": true. Es INDEPENDIENTE de "ruta":
+  un mensaje puede pedir datos internos (NUEVA_CONSULTA/REFINAMIENTO) Y
+  requerir información externa al mismo tiempo.
+  Ejemplo: "dame las ventas de camisetas manga corta y compáralas con la
+  competencia" → ruta: NUEVA_CONSULTA (las ventas SÍ están en la BD),
+  necesita_busqueda_web: true (la competencia NO está en la BD).
+  Si el mensaje no menciona ni implica nada externo al negocio interno,
+  "necesita_busqueda_web" es false.
 """
 
 if _catalogo_tool_pandas is not None:
@@ -175,13 +189,14 @@ _JSON_SCHEMA_ENRUTADOR = {
         'required': [
             'ruta', 'confianza', 'razon', 'df_relevante',
             'operacion_sugerida', 'parametros_sugeridos', 'contexto_sql',
-            'sub_preguntas',
+            'sub_preguntas', 'necesita_busqueda_web',
         ],
         'properties': {
             'ruta':      {'type': 'string', 'enum': list(RUTAS)},
             'confianza': {'type': 'string', 'enum': ['alta', 'media', 'baja']},
             'razon':     {'type': 'string'},
             'df_relevante': {'type': ['string', 'null']},
+            'necesita_busqueda_web': {'type': 'boolean'},
             'sub_preguntas': {
                 'type': ['array', 'null'],
                 'items': {'type': 'string'},
@@ -244,6 +259,7 @@ def clasificar(
           'parametros_sugeridos': dict | None,
           'contexto_sql': str | None,
           'sub_preguntas': list[str] | None,
+          'necesita_busqueda_web': bool,
         }
     """
     hay_historial = bool(contexto_sesion.get('historial'))
@@ -269,6 +285,7 @@ def clasificar(
             'parametros_sugeridos':  None,
             'contexto_sql':          None,
             'sub_preguntas':         None,
+            'necesita_busqueda_web': False,
         }
 
     # Si el cliente no está disponible → fallback a regex simple
@@ -295,7 +312,9 @@ def clasificar(
         )
         texto = resp.choices[0].message.content.strip()
         resultado = _parsear_respuesta(texto)
-        print(f'  [enrutador] {resultado["ruta"]} (confianza: {resultado["confianza"]}) — {resultado["razon"][:80]}')
+        print(f'  [enrutador] {resultado["ruta"]} (confianza: {resultado["confianza"]}) — {resultado["razon"]}')
+        if resultado['necesita_busqueda_web']:
+            print(f'  [enrutador] necesita_busqueda_web=True')
         return resultado
 
     except Exception as e:
@@ -366,6 +385,7 @@ def _parsear_respuesta(texto: str) -> dict:
         'parametros_sugeridos':  data.get('parametros_sugeridos'),
         'contexto_sql':          data.get('contexto_sql'),
         'sub_preguntas':         data.get('sub_preguntas') or None,
+        'necesita_busqueda_web': bool(data.get('necesita_busqueda_web', False)),
     }
 
 
@@ -410,6 +430,10 @@ def _clasificar_regex(pregunta: str, contexto: dict) -> dict:
 
 
 def _fallback_ruta(ruta: str, razon: str) -> dict:
+    # necesita_busqueda_web queda en False: estos caminos (regex/parseo fallido)
+    # no tienen LLM disponible para emitir la señal; server.py sigue
+    # detectando intención web por su propia regex (es_intencion_busqueda_web),
+    # así que la capacidad no se pierde, solo la señal extra del enrutador.
     return {
         'ruta':                  ruta,
         'confianza':             'baja',
@@ -419,4 +443,5 @@ def _fallback_ruta(ruta: str, razon: str) -> dict:
         'parametros_sugeridos':  None,
         'contexto_sql':          None,
         'sub_preguntas':         None,
+        'necesita_busqueda_web': False,
     }

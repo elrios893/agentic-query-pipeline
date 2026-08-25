@@ -29,6 +29,12 @@ MAX_CHARS_PREGUNTA_LLM = 300  # Tope de la pregunta al serializarla para el LLM
                                # solo la copia que ve el modelo — evita que un
                                # mensaje inusualmente largo se repita entero
                                # en cada prompt durante las próximas 3 turnos)
+MAX_BUSQUEDAS_WEB_SESION = 3  # Tope de llamadas a Tavily por sesión — cada
+                               # búsqueda es una petición HTTP paga; sin este
+                               # límite, una sesión larga o un mensaje que el
+                               # enrutador reclasifica en cada turno como
+                               # "necesita_busqueda_web" podría disparar una
+                               # búsqueda por turno indefinidamente.
 
 
 # ---------------------------------------------------------------------------
@@ -75,6 +81,7 @@ class Sesion:
     turno_actual: int = 0
     creada: float = field(default_factory=time.time)
     ultima_actividad: float = field(default_factory=time.time)
+    busquedas_web: int = 0  # contador de llamadas a Tavily en esta sesión
 
 
 # ---------------------------------------------------------------------------
@@ -219,6 +226,22 @@ class SessionStore:
     def obtener_historial(self, session_id: str) -> list[Turno]:
         sesion = self.obtener_o_crear(session_id)
         return list(sesion.historial)
+
+    # ------------------------------------------------------------------
+    # Límite de búsquedas web (Tavily) por sesión
+    # ------------------------------------------------------------------
+
+    def puede_buscar_web(self, session_id: str) -> bool:
+        """True si la sesión aún no alcanzó MAX_BUSQUEDAS_WEB_SESION."""
+        sesion = self.obtener_o_crear(session_id)
+        with self._lock:
+            return sesion.busquedas_web < MAX_BUSQUEDAS_WEB_SESION
+
+    def registrar_busqueda_web(self, session_id: str):
+        """Incrementa el contador tras una llamada real a Tavily (no al omitirla)."""
+        sesion = self.obtener_o_crear(session_id)
+        with self._lock:
+            sesion.busquedas_web += 1
 
     def hay_historial(self, session_id: str) -> bool:
         """True si la sesión tiene al menos un turno previo."""
