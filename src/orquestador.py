@@ -190,9 +190,19 @@ PATRONES_INFORME = re.compile(
     re.IGNORECASE
 )
 
-PATRONES_GRAFICO = re.compile(
+PATRONES_GRAFICO_CLARO = re.compile(
     r'(grafic\w*|grafica\w*|chart|plotea\w*|visualiza\w*|'
-    r'\bbarras\b|\btorta\b|\blinea\b|\btendencia\b|\bdistribucion\b)',
+    r'\bbarras\b|\btorta\b)',
+    re.IGNORECASE
+)
+
+# Palabras ambiguas: "linea" puede ser "grafico de linea" o "linea de
+# producto" (dimension de negocio); "tendencia" puede ser "grafico de
+# tendencia" o "tendencia de mercado"; "distribucion" puede ser un chart
+# o "distribucion/cobertura de producto". Sueltas no bastan para inferir
+# intencion de grafico — ver es_intencion_grafico().
+PATRONES_GRAFICO_AMBIGUO = re.compile(
+    r'(\blinea\b|\btendencia\b|\bdistribucion\b)',
     re.IGNORECASE
 )
 
@@ -220,7 +230,15 @@ def es_intencion_busqueda_web(texto: str) -> bool:
     return bool(PATRONES_BUSQUEDA_WEB.search(texto))
 
 def es_intencion_grafico(texto: str) -> bool:
-    return bool(PATRONES_GRAFICO.search(texto))
+    if PATRONES_GRAFICO_CLARO.search(texto):
+        return True
+    if PATRONES_GRAFICO_AMBIGUO.search(texto):
+        # "linea"/"tendencia"/"distribucion" sueltas no cuentan como pedido
+        # de grafico si la pregunta ya pide explicitamente excel — en ese
+        # contexto son casi siempre la lectura de negocio (linea de
+        # producto, tendencia de mercado), no un tipo de chart.
+        return not PATRONES_EXCEL.search(texto)
+    return False
 
 def es_intencion_excel(texto: str) -> bool:
     return bool(PATRONES_EXCEL.search(texto))
