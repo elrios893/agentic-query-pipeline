@@ -40,43 +40,8 @@ Consulta que necesite GRUPO normalizado        → ventas_unificada (usar "GRUPO
 Consulta explícita sobre dato crudo/original   → ventas_2025 o ventas_2026
 ```
 
-### Patrón estándar con ventas_unificada
-```sql
--- Consulta general SIN año/período especificado por el usuario → usa
--- "lo que va del año" (YTD), NUNCA el año completo sin acotar. Ver fechas
--- exactas de hoy en "Filtro de tiempo por defecto" en Contexto temporal:
-SELECT UPPER(TRIM("DEPARTAMENTO")) AS "DEPARTAMENTO",
-       SUM("CANTIDAD") AS "Unidades",
-       SUM("CANTIDAD" * "PVP") AS "Valor_COP"
-FROM ventas_unificada
-WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
-  AND "Año" = 2026
-  AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-01-01' AND '<hoy, ver Contexto temporal>'
-GROUP BY 1
-ORDER BY 2 DESC;
-
--- Comparar año en curso vs año anterior por GRUPO normalizado.
--- NUNCA compares el año en curso completo contra un año anterior completo
--- (el en curso tiene menos días de datos — comparación falsa). Usa el MISMO
--- rango de fechas en ambos años: ver bloque "Comparaciones año en curso vs
--- año histórico" en el Contexto temporal para las fechas exactas del día de
--- hoy — este es solo el patrón, no copiar los años/fechas literales:
-SELECT
-    TRIM("GRUPO_NORM") AS "Grupo",
-    SUM(CASE WHEN "Año" = 2026 AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')
-             BETWEEN '2026-01-01' AND '<fin_rango_actual del Contexto temporal>'
-             THEN "CANTIDAD" ELSE 0 END) AS "Unidades_2026_a_la_fecha",
-    SUM(CASE WHEN "Año" = 2025 AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')
-             BETWEEN '2025-01-01' AND '<fin_rango_anterior del Contexto temporal>'
-             THEN "CANTIDAD" ELSE 0 END) AS "Unidades_2025_mismo_rango"
-FROM ventas_unificada
-WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
-GROUP BY 1
-ORDER BY 2 DESC;
-```
-
 ### Contexto temporal
-- La fecha de hoy, el "Filtro de tiempo por defecto" (YTD) y las reglas de comparación año-en-curso-vs-histórico se inyectan dinámicamente más abajo, en las "Reglas adicionales obligatorias" (sección con la fecha real del sistema) — usa esas fechas exactas, no un valor fijo.
+- La fecha de hoy, el "Filtro de tiempo por defecto" (YTD) y las reglas de comparación año-en-curso-vs-histórico — con los patrones SQL exactos y las fechas reales del día — se inyectan dinámicamente más abajo, en las "Reglas adicionales obligatorias" (sección con la fecha real del sistema). Usa esos patrones y fechas, no valores fijos.
 - Cuando el usuario mencione un día o mes sin especificar año, usa el año en curso indicado en esa sección con `ventas_unificada` (tabla preferida por defecto — ver arriba).
 - **Si el usuario NO especifica año, intervalo ni período de tiempo en absoluto**, SIEMPRE filtra por "lo que va del año" (año en curso, desde el 1 de enero hasta hoy) — el patrón exacto está en "Filtro de tiempo por defecto" de esa sección. NUNCA devuelvas el año completo sin ese límite, salvo que el usuario lo pida explícitamente o se trate de una comparación con años ya terminados.
 
@@ -392,6 +357,21 @@ ORDER BY 2 DESC;
     ```
     Aplica a cualquier entidad resuelta así (tienda, departamento, zona, línea, referencia, etc.) — no solo a `DESC_DEPENDENCIA`.
 
+
+27. **Agrupación por semana (`DATE_TRUNC('week', ...)`) — SIEMPRE incluir `"Dias_Con_Datos"`**: cuando agrupes por semana, la primera y/o última semana del rango filtrado puede quedar **parcial** si el `BETWEEN` del `WHERE` no empieza en lunes o no termina en domingo (ej: un filtro que empieza un viernes solo trae 2 días de esa semana, pero en el resultado se ve igual que una semana completa de 7 días — puede llevar a comparar una semana completa con una parcial sin que se note). Para que se pueda detectar, agrega siempre `COUNT(DISTINCT TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS "Dias_Con_Datos"` junto al `DATE_TRUNC('week', ...)`:
+    ```sql
+    SELECT
+        DATE_TRUNC('week', TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS "Semana",
+        COUNT(DISTINCT TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY')) AS "Dias_Con_Datos",
+        SUM("CANTIDAD" * "PVP") AS "Ventas"
+    FROM ventas_unificada
+    WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS'
+      AND "Año" = 2026
+      AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '2026-08-01' AND '2026-08-27'
+    GROUP BY 1
+    ORDER BY 1 ASC;
+    ```
+    Este patrón aplica igual cuando la agrupación por semana está desglosada en varias columnas (ej. una serie de `SUM(CASE WHEN ...)` por tienda) — el `"Dias_Con_Datos"` va una sola vez por fila, no por columna.
 
 ### Esquema de la tabla `ventas_2025` / `ventas_2026`
 

@@ -65,7 +65,15 @@ def _serializar_celda(cell):
         return cell
     if isinstance(cell, decimal.Decimal):
         return float(cell)
-    if isinstance(cell, (datetime.date, datetime.datetime)):
+    if isinstance(cell, datetime.datetime):
+        # DATE_TRUNC('week'/'month'/'day', ...) devuelve timestamp con hora
+        # 00:00:00 (a veces con zona horaria) aunque el dato real es una
+        # fecha simple — mostrar la hora/offset ahi es ruido, no informacion
+        # ("2026-07-27T00:00:00-05:00" en vez de "2026-07-27").
+        if cell.time() == datetime.time(0, 0):
+            return cell.date().isoformat()
+        return cell.isoformat()
+    if isinstance(cell, datetime.date):
         return cell.isoformat()
     return str(cell)
 
