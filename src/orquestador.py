@@ -149,6 +149,33 @@ Comparar el año {anio} (en curso, solo tiene datos hasta {hoy_str}) contra el a
 10. CAST para ROUND en porcentajes y decimales: PostgreSQL requiere CAST(...AS numeric) antes de ROUND(). Si calculas porcentajes o decimales, usa siempre ROUND(CAST((SUM(...) * 100.0) / NULLIF(...) AS numeric), 2). NUNCA uses ROUND() sin CAST en operaciones aritmeticas.
 11. Comparaciones de periodos temporales (ej: enero vs febrero, mes1 vs mes2, o {anio} vs {anio_ant}): NUNCA uses FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN. Usa UNA SOLA tabla con multiples CASE WHEN para cada periodo. Ejemplo correcto: SELECT SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero FROM tabla WHERE fecha BETWEEN ene_inicio AND feb_fin GROUP BY ...
 12. REFERENCIA siempre acompañada de GRUPO: Cuando la consulta incluya la columna "REFERENCIA" en el SELECT, DEBE incluir también el grupo de producto. Si la tabla es ventas_unificada, usa TRIM("GRUPO_NORM") AS "GRUPO" (NUNCA la columna "GRUPO" cruda de esa vista). Si la tabla es ventas_2025 o ventas_2026 directamente, usa UPPER(TRIM("GRUPO")) AS "GRUPO". Esto es obligatorio para que el usuario pueda contextualizar cada referencia dentro de su grupo de producto.
+13. Top-N por grupo (ranking particionado) — CRÍTICO: si el usuario pide las referencias/items más vendidos O menos vendidos ("más vendida(s)", "mejor(es) vendido(s)", "menos vendida(s)", "peor(es) vendido(s)", "top N", "bottom N") DESGLOSADOS POR una o más dimensiones de baja cardinalidad (ZONA, LINEA, DEPARTAMENTO, TALLA, GRUPO, etc.), NUNCA uses un ORDER BY ... DESC/ASC plano sobre todas las filas — eso devuelve TODAS las referencias ordenadas en vez de un top por grupo. Usa este patrón obligatorio:
+    (1) CTE que agregue por las dimensiones + la columna de alta cardinalidad (REFERENCIA/DESC_ITEM).
+    (2) segunda CTE que calcule DENSE_RANK() OVER (PARTITION BY <dimensiones de baja cardinalidad> ORDER BY <metrica> DESC/ASC según lo pedido) AS "Ranking" sobre la CTE anterior.
+        - Si es "menos vendidas"/"peor(es) vendido(s)" (orden ASC): agrega SIEMPRE la columna de alta cardinalidad (REFERENCIA/DESC_ITEM) como segundo criterio de desempate — OBLIGATORIO, ej: ORDER BY "Unidades_Vendidas" ASC, "REFERENCIA" ASC. Hay muchísimas referencias empatadas en ventas bajas (0, 1, 2 unidades); sin desempate DENSE_RANK asigna el mismo "Ranking" a decenas de filas empatadas, disparando el resultado muy por encima de N filas por grupo.
+        - Si es "más vendidas"/"mejor(es) vendido(s)" (orden DESC): NO agregues el desempate por REFERENCIA/DESC_ITEM — usa únicamente ORDER BY <metrica> DESC. Los empates exactos en ventas altas son raros y el desempate ahí es innecesario; esta regla de desempate aplica EXCLUSIVAMENTE al orden ASC (menos vendidas).
+    (3) SELECT final con WHERE "Ranking" <= N (N=5 si el usuario no especifica un número, o el número que pida) ORDER BY <dimensiones>, "Ranking".
+    Ejemplo (top 5 referencias más vendidas por zona y línea):
+    ```sql
+    WITH ventas_agrupadas AS (
+      SELECT UPPER(TRIM("ZONA")) AS "ZONA", TRIM("LINEA_NORM") AS "LINEA", UPPER(TRIM("REFERENCIA")) AS "REFERENCIA",
+             MAX(TRIM("GRUPO_NORM")) AS "GRUPO", SUM("CANTIDAD") AS "Unidades_Vendidas"
+      FROM ventas_unificada
+      WHERE TRIM("DESC_MOVIMIENTO") = 'VENTAS POS' AND "Año" = {anio}
+        AND TO_DATE("FECHA_MVTO", 'FMDD/FMMM/YYYY') BETWEEN '{anio}-01-01' AND '{rango_fin_actual}'
+        AND "ZONA" IS NOT NULL AND "LINEA_NORM" IS NOT NULL AND "REFERENCIA" IS NOT NULL
+      GROUP BY 1, 2, 3
+    ),
+    ranking_zona_linea AS (
+      SELECT *, DENSE_RANK() OVER (PARTITION BY "ZONA", "LINEA" ORDER BY "Unidades_Vendidas" DESC) AS "Ranking"
+      FROM ventas_agrupadas
+    )
+    SELECT "ZONA", "LINEA", "Ranking", "REFERENCIA", "GRUPO", "Unidades_Vendidas"
+    FROM ranking_zona_linea
+    WHERE "Ranking" <= 5
+    ORDER BY "ZONA" ASC, "LINEA" ASC, "Ranking" ASC;
+    ```
+    Para "menos vendidas" el mismo patrón pero con ORDER BY "Unidades_Vendidas" ASC, "REFERENCIA" ASC dentro del DENSE_RANK.
 """
 
 def _reglas_val() -> str:
@@ -181,7 +208,9 @@ def _reglas_val() -> str:
 15. Deteccion de Cartesian product en comparaciones de periodos: si la consulta contiene FULL OUTER JOIN, LEFT JOIN, o RIGHT JOIN combinado con EXTRACT(DAY FROM ...) = EXTRACT(DAY FROM ...) u otro EXTRACT en la condicion ON → RECHAZAR. Feedback: "Para comparar periodos (enero vs febrero), NO uses JOINs. Usa UNA tabla con multiples CASE WHEN para cada periodo: SUM(CASE WHEN fecha BETWEEN ene THEN valor ELSE 0 END) AS Enero, SUM(CASE WHEN fecha BETWEEN feb THEN valor ELSE 0 END) AS Febrero".
 16. LIMIT obligatorio en subqueries con "día/fecha de mayor venta": si la consulta detecta un patrón como COALESCE(...SELECT...GROUP BY fecha...LIMIT 1), DEBE tener LIMIT N en la query principal. Sin LIMIT → RECHAZAR. Mensaje: "Falta LIMIT en la query principal. Subqueries que buscan 'día de mayor venta' requieren LIMIT obligatorio para evitar procesar todas las filas. Agregar LIMIT 10 (o el número que pidió el usuario) antes del punto y coma final".
 17. Tabla ventas_unificada: es una tabla válida. Aceptar consultas que usen FROM ventas_unificada. Si usa "GRUPO" en lugar de "GRUPO_NORM" sobre ventas_unificada, ADVERTIR en el feedback pero NO rechazar.
-19. Filtro de tiempo por defecto sin acotar: si la consulta filtra WHERE "Año" = {anio} (año en curso) SIN restringir también por fecha (TO_DATE("FECHA_MVTO", ...) BETWEEN/<= hasta una fecha cercana a hoy), y no hay evidencia en los alias/columnas de que el usuario pidió explícitamente "todo el año", una proyección, o una comparación entre años ya terminados, ADVIERTE en el feedback que falta acotar a "lo que va del año" (year-to-date) — no rechaces solo por esto, es un recordatorio para el generador, no un error de sintaxis."""
+19. Filtro de tiempo por defecto sin acotar: si la consulta filtra WHERE "Año" = {anio} (año en curso) SIN restringir también por fecha (TO_DATE("FECHA_MVTO", ...) BETWEEN/<= hasta una fecha cercana a hoy), y no hay evidencia en los alias/columnas de que el usuario pidió explícitamente "todo el año", una proyección, o una comparación entre años ya terminados, ADVIERTE en el feedback que falta acotar a "lo que va del año" (year-to-date) — no rechaces solo por esto, es un recordatorio para el generador, no un error de sintaxis.
+20. Top-N por grupo sin ranking particionado: si el SELECT incluye una columna de alta cardinalidad (REFERENCIA o DESC_ITEM) junto con GROUP BY/agregación sobre una o más dimensiones de baja cardinalidad (ZONA, LINEA, DEPARTAMENTO, TALLA, GRUPO, CATEGORIA, CLIMA, etc.), Y la consulta ordena por una métrica DESC SIN usar RANK()/DENSE_RANK()/ROW_NUMBER() con WHERE sobre el ranking, ADVIERTE en el feedback: "Si la intención es 'top N por grupo' (ej. más vendidas por zona), falta el patrón de ranking particionado: DENSE_RANK() OVER (PARTITION BY <dimensiones de baja cardinalidad> ORDER BY <metrica> DESC) AS Ranking en una CTE + WHERE Ranking <= N en la consulta final" — NO rechaces por esto: el validador no ve la pregunta original y no puede distinguir "top/más vendidas" (requiere ranking) de "listado completo/todas" (no lo requiere); es el generador quien decide segun el enunciado del usuario. NO aplica si la consulta ya usa RANK/DENSE_RANK/ROW_NUMBER con filtro de ranking (ver regla 11), ni si el SELECT no incluye REFERENCIA/DESC_ITEM.
+21. Ranking particionado ASC sin desempate por columna de alta cardinalidad — RECHAZAR: si la consulta usa RANK()/DENSE_RANK() con PARTITION BY, ORDER BY ... ASC dentro del OVER(...) (patrón de "menos vendidas"/"peor(es) vendido(s)") y WHERE sobre el ranking (ej. "Ranking" <= 5), Y ese ORDER BY ordena SOLO por la métrica SIN incluir también la columna de alta cardinalidad del SELECT (REFERENCIA o DESC_ITEM) como segundo criterio → RECHAZAR. Esto es un error mecánico, no de negocio: en ventas bajas (0, 1, 2 unidades) hay muchísimas referencias empatadas, y sin ese desempate DENSE_RANK asigna el mismo "Ranking" a decenas de filas empatadas — el filtro WHERE Ranking <= N deja de acotar el resultado y puede devolver cientos de filas de más por grupo. Mensaje: "Agrega la columna de alta cardinalidad (REFERENCIA/DESC_ITEM) como segundo criterio en el ORDER BY del DENSE_RANK/RANK, ej: ORDER BY \\"Unidades_Vendidas\\" ASC, \\"REFERENCIA\\" ASC — sin este desempate los valores empatados no quedan acotados por el WHERE Ranking <= N." NO aplica a ranking en orden DESC ("más vendidas"): ahí los empates exactos son raros y el desempate NO debes usarlo. NO aplica si ya usa ROW_NUMBER() (que no tiene empates) en vez de RANK/DENSE_RANK."""
 
 PATRONES_INFORME = re.compile(
     r'\b(informe|reporte|report|documento|word|docx|'
