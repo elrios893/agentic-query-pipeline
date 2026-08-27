@@ -455,18 +455,29 @@ def _construir_prompt(pregunta: str, contexto: dict, plantillas_candidatas: list
     # que agregar nada a SYSTEM_ENRUTADOR, que se manda en TODAS las
     # llamadas — ver nota de presupuesto en orquestador.py/_reglas_gen.
     if plantillas_candidatas:
+        from datetime import datetime as _dt
+        _hoy = _dt.now()
         partes.append('--- Plantillas SQL pre-armadas y ya validadas para esta pregunta ---')
         partes.append(
+            f'Hoy es {_hoy.strftime("%Y-%m-%d")} (año en curso: {_hoy.year}). '
             'Si alguna de estas plantillas responde EXACTAMENTE lo que pide el '
             'usuario, indícalo con "plantilla_sugerida" (el id exacto) y '
             '"plantilla_parametros" (los valores que puedas extraer del mensaje '
-            'para sus parámetros — nombres de tienda, fechas, N, etc.; usa null '
-            'para los que no se mencionan, la plantilla trae sus propios '
-            'defaults). "plantilla_confianza": "alta" SOLO si la plantilla '
-            'cubre la pregunta completa sin adaptarla; "media" si aplica en '
-            'espíritu pero con matices (otra dimensión, otro filtro no '
-            'soportado); "ninguna" si ninguna aplica realmente — ante la duda, '
-            'preferir "media" y nunca forzar "alta".'
+            'para sus parámetros). Para parámetros de tipo fecha, usa SIEMPRE '
+            f'formato "YYYY-MM-DD" con el AÑO EN CURSO ({_hoy.year}) salvo que '
+            'el usuario mencione explícitamente otro año — ej. "el mes de '
+            f'junio" sin año → {_hoy.year}-06-01 a {_hoy.year}-06-30, NUNCA un '
+            'año distinto al que se te dio arriba. Para los demás tipos de '
+            'parámetro (nombres de tienda, N, etc.) usa null si no se '
+            'mencionan — la plantilla trae sus propios defaults, pero ese '
+            'default NO conoce la fecha de hoy, así que resuelve tú cualquier '
+            'fecha relativa explícita ("junio", "este mes", "la semana '
+            'pasada") en vez de dejarla en null. "plantilla_confianza": '
+            '"alta" SOLO si la plantilla cubre la pregunta completa sin '
+            'adaptarla; "media" si aplica en espíritu pero con matices (otra '
+            'dimensión, otro filtro no soportado); "ninguna" si ninguna '
+            'aplica realmente — ante la duda, preferir "media" y nunca '
+            'forzar "alta".'
         )
         for c in plantillas_candidatas:
             params = ', '.join(c.get('parametros', {}).keys())
