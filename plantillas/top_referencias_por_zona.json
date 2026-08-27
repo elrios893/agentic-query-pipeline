@@ -1,0 +1,19 @@
+{
+  "id": "top_referencias_por_zona",
+  "descripcion": "Top N referencias mas vendidas desglosadas por zona y linea en un rango de fechas, usando ranking particionado (no ORDER BY plano)",
+  "disparadores": [
+    "referencias mas vendidas por zona",
+    "top referencias por zona",
+    "que referencias se venden mas en cada zona",
+    "productos mas vendidos por zona y linea",
+    "mejores referencias por zona"
+  ],
+  "parametros": {
+    "fecha_inicio": {"tipo": "fecha",  "requerido": false, "default": "@inicio_ytd"},
+    "fecha_fin":    {"tipo": "fecha",  "requerido": false, "default": "@hoy"},
+    "n":            {"tipo": "entero", "requerido": false, "default": 5}
+  },
+  "sql": "WITH ventas_agrupadas AS ( SELECT UPPER(TRIM(\"ZONA\")) AS \"ZONA\", TRIM(\"LINEA_NORM\") AS \"LINEA\", UPPER(TRIM(\"REFERENCIA\")) AS \"REFERENCIA\", MAX(TRIM(\"GRUPO_NORM\")) AS \"GRUPO\", SUM(\"CANTIDAD\") AS \"Unidades_Vendidas\" FROM ventas_unificada WHERE TRIM(\"DESC_MOVIMIENTO\") = 'VENTAS POS' AND TO_DATE(\"FECHA_MVTO\", 'FMDD/FMMM/YYYY') BETWEEN {{fecha_inicio}} AND {{fecha_fin}} AND \"ZONA\" IS NOT NULL AND \"LINEA_NORM\" IS NOT NULL AND \"REFERENCIA\" IS NOT NULL GROUP BY 1, 2, 3 ), ranking_zona_linea AS ( SELECT *, DENSE_RANK() OVER (PARTITION BY \"ZONA\", \"LINEA\" ORDER BY \"Unidades_Vendidas\" DESC) AS \"Ranking\" FROM ventas_agrupadas ) SELECT \"ZONA\", \"LINEA\", \"Ranking\", \"REFERENCIA\", \"GRUPO\", \"Unidades_Vendidas\" FROM ranking_zona_linea WHERE \"Ranking\" <= {{n}} ORDER BY \"ZONA\" ASC, \"LINEA\" ASC, \"Ranking\" ASC;",
+  "notas": "Version 'mas vendidas' (orden DESC) — sin desempate por REFERENCIA, ver regla 13 de _reglas_gen en orquestador.py. Para 'menos vendidas' hace falta una plantilla separada con ORDER BY ASC + desempate por REFERENCIA obligatorio; no reusar esta con ASC.",
+  "validada_en": "2026-08-27"
+}

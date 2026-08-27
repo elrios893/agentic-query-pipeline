@@ -275,9 +275,39 @@ _JSON_SCHEMA_ENRUTADOR = {
 }
 
 
+def _construir_schema_con_plantillas(ids_candidatas: list[str]) -> dict:
+    """Copia de _JSON_SCHEMA_ENRUTADOR extendida con 3 campos de plantillas.
+    Se construye por request, SOLO cuando hay candidatas (nunca a nivel de
+    módulo) — así el schema base (y su costo) no cambia para la inmensa
+    mayoría de turnos que no matchean ninguna plantilla.
+
+    "plantilla_sugerida" restringe su enum a las candidatas YA filtradas de
+    ESTE turno (máx. unas pocas, ver src/plantillas.py candidatas()), no a
+    toda la biblioteca — evita que el modelo devuelva un id inventado sin
+    reintroducir el problema que se quería evitar (un enum que crece con
+    cada plantilla nueva y se manda en todas las llamadas)."""
+    import copy
+    schema = copy.deepcopy(_JSON_SCHEMA_ENRUTADOR)
+    props = schema['schema']['properties']
+    props['plantilla_sugerida'] = {
+        'type': ['string', 'null'],
+        'enum': list(ids_candidatas) + [None],
+    }
+    props['plantilla_parametros'] = {'type': ['object', 'null']}
+    props['plantilla_confianza'] = {
+        'type': 'string',
+        'enum': ['alta', 'media', 'ninguna'],
+    }
+    schema['schema']['required'] += [
+        'plantilla_sugerida', 'plantilla_parametros', 'plantilla_confianza',
+    ]
+    return schema
+
+
 def clasificar(
     pregunta: str,
     contexto_sesion: dict,
+    plantillas_candidatas: list | None = None,
 ) -> dict:
     """
     Clasifica el mensaje del usuario usando el LLM ligero.
@@ -285,6 +315,9 @@ def clasificar(
     Args:
         pregunta: mensaje actual del usuario
         contexto_sesion: dict con 'historial' y 'dataframes_activos' del SessionStore
+        plantillas_candidatas: salida de src/plantillas.py::candidatas(pregunta) ya
+            calculada por server.py, o None/[] si no hubo match léxico — en ese
+            caso la llamada es idéntica a como era antes de esta funcionalidad.
 
     Returns:
         {
@@ -299,6 +332,9 @@ def clasificar(
           'necesita_busqueda_web': bool,
           'relacion_tipo': str,           # 'causal' | 'comparativa' | 'secuencial' | 'ninguna'
           'relacion_descripcion': str,     # '' si relacion_tipo es 'ninguna'
+          'plantilla_sugerida': str | None,     # id de plantilla, o None
+          'plantilla_parametros': dict | None,  # valores extraídos del mensaje para esa plantilla
+          'plantilla_confianza': str,           # 'alta' | 'media' | 'ninguna'
         }
     """
     hay_historial = bool(contexto_sesion.get('historial'))
@@ -327,6 +363,9 @@ def clasificar(
             'necesita_busqueda_web': False,
             'relacion_tipo':         'ninguna',
             'relacion_descripcion':  '',
+            'plantilla_sugerida':    None,
+            'plantilla_parametros':  None,
+            'plantilla_confianza':   'ninguna',
         }
 
     # Si el cliente no está disponible → fallback a regex simple
@@ -334,7 +373,13 @@ def clasificar(
         return _clasificar_regex(pregunta, contexto_sesion)
 
     # Construir prompt con el contexto de la sesión
-    prompt = _construir_prompt(pregunta, contexto_sesion)
+    prompt = _construir_prompt(pregunta, contexto_sesion, plantillas_candidatas)
+
+    # El schema extendido (campos de plantillas) solo se construye — y solo
+    # se manda — cuando hay candidatas reales para este turno. Sin
+    # candidatas, la llamada es byte-por-byte la de siempre.
+    ids_candidatas = [c['id'] for c in plantillas_candidatas] if plantillas_candidatas else []
+    json_schema = _construir_schema_con_plantillas(ids_candidatas) if ids_candidatas else _JSON_SCHEMA_ENRUTADOR
 
     try:
         resp = _client_router.chat.completions.create(
@@ -348,11 +393,11 @@ def clasificar(
             reasoning_effort='low',
             response_format={
                 'type': 'json_schema',
-                'json_schema': _JSON_SCHEMA_ENRUTADOR,
+                'json_schema': json_schema,
             },
         )
         texto = resp.choices[0].message.content.strip()
-        resultado = _parsear_respuesta(texto)
+        resultado = _parsear_respuesta(texto, ids_candidatas)
         print(f'  [enrutador] {resultado["ruta"]} (confianza: {resultado["confianza"]}) — {resultado["razon"]}')
         if resultado['necesita_busqueda_web']:
             print(f'  [enrutador] necesita_busqueda_web=True')
@@ -362,6 +407,8 @@ def clasificar(
         if resultado['sub_preguntas'] and len(resultado['sub_preguntas']) >= 2:
             desc = f' — {resultado["relacion_descripcion"]}' if resultado['relacion_descripcion'] else ''
             print(f'  [enrutador] relacion_tipo={resultado["relacion_tipo"]}{desc}')
+        if resultado['plantilla_sugerida']:
+            print(f'  [enrutador] plantilla_sugerida={resultado["plantilla_sugerida"]} (confianza: {resultado["plantilla_confianza"]})')
         return resultado
 
     except Exception as e:
@@ -373,7 +420,7 @@ def clasificar(
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _construir_prompt(pregunta: str, contexto: dict) -> str:
+def _construir_prompt(pregunta: str, contexto: dict, plantillas_candidatas: list | None = None) -> str:
     historial = contexto.get('historial', [])
     dfs       = contexto.get('dataframes_activos', [])
     turno     = contexto.get('turno_actual', 0)
@@ -400,12 +447,44 @@ def _construir_prompt(pregunta: str, contexto: dict) -> str:
             )
         partes.append('')
 
+    # Bloque de plantillas SQL pre-armadas — solo aparece cuando un prefiltro
+    # léxico local (ver src/plantillas.py) ya encontró candidatas para esta
+    # pregunta puntual, así que en la mayoría de los turnos este bloque no
+    # existe y el prompt es idéntico al de siempre (0 tokens extra). Es
+    # autocontenido (explica los 3 campos nuevos aquí mismo) para no tener
+    # que agregar nada a SYSTEM_ENRUTADOR, que se manda en TODAS las
+    # llamadas — ver nota de presupuesto en orquestador.py/_reglas_gen.
+    if plantillas_candidatas:
+        partes.append('--- Plantillas SQL pre-armadas y ya validadas para esta pregunta ---')
+        partes.append(
+            'Si alguna de estas plantillas responde EXACTAMENTE lo que pide el '
+            'usuario, indícalo con "plantilla_sugerida" (el id exacto) y '
+            '"plantilla_parametros" (los valores que puedas extraer del mensaje '
+            'para sus parámetros — nombres de tienda, fechas, N, etc.; usa null '
+            'para los que no se mencionan, la plantilla trae sus propios '
+            'defaults). "plantilla_confianza": "alta" SOLO si la plantilla '
+            'cubre la pregunta completa sin adaptarla; "media" si aplica en '
+            'espíritu pero con matices (otra dimensión, otro filtro no '
+            'soportado); "ninguna" si ninguna aplica realmente — ante la duda, '
+            'preferir "media" y nunca forzar "alta".'
+        )
+        for c in plantillas_candidatas:
+            params = ', '.join(c.get('parametros', {}).keys())
+            partes.append(f'  - id="{c["id"]}": {c["descripcion"]} | parámetros: {params}')
+        partes.append('')
+
     partes.append('Clasifica el mensaje del usuario. Responde solo con el JSON.')
     return '\n'.join(partes)
 
 
-def _parsear_respuesta(texto: str) -> dict:
-    """Extrae el JSON de la respuesta del LLM."""
+def _parsear_respuesta(texto: str, ids_candidatas: list[str] | None = None) -> dict:
+    """Extrae el JSON de la respuesta del LLM.
+
+    ids_candidatas: ids de plantillas realmente ofrecidas en este turno (ver
+    clasificar). Si el modelo devuelve un plantilla_sugerida que no está en
+    esta lista (alucinado, o quedó de un schema viejo), se descarta a None —
+    nunca se confía en un id que Python no ofreció explícitamente."""
+    ids_candidatas = ids_candidatas or []
     # Intentar parsear directamente
     try:
         data = json.loads(texto)
@@ -432,6 +511,13 @@ def _parsear_respuesta(texto: str) -> dict:
     if not sub_preguntas or len(sub_preguntas) < 2:
         relacion_tipo = 'ninguna'
 
+    plantilla_sugerida = data.get('plantilla_sugerida')
+    if plantilla_sugerida not in ids_candidatas:
+        plantilla_sugerida = None
+    plantilla_confianza = (data.get('plantilla_confianza') or 'ninguna').strip().lower()
+    if plantilla_confianza not in ('alta', 'media', 'ninguna') or not plantilla_sugerida:
+        plantilla_confianza = 'ninguna'
+
     return {
         'ruta':                  ruta,
         'confianza':             data.get('confianza', 'media'),
@@ -444,6 +530,9 @@ def _parsear_respuesta(texto: str) -> dict:
         'necesita_busqueda_web': bool(data.get('necesita_busqueda_web', False)),
         'relacion_tipo':         relacion_tipo,
         'relacion_descripcion':  (data.get('relacion_descripcion') or '') if relacion_tipo != 'ninguna' else '',
+        'plantilla_sugerida':    plantilla_sugerida,
+        'plantilla_parametros':  data.get('plantilla_parametros') if plantilla_sugerida else None,
+        'plantilla_confianza':   plantilla_confianza,
     }
 
 
@@ -504,4 +593,7 @@ def _fallback_ruta(ruta: str, razon: str) -> dict:
         'necesita_busqueda_web': False,
         'relacion_tipo':         'ninguna',
         'relacion_descripcion':  '',
+        'plantilla_sugerida':    None,
+        'plantilla_parametros':  None,
+        'plantilla_confianza':   'ninguna',
     }

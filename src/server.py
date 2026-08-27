@@ -58,8 +58,20 @@ from src.orquestador import (
     analizar_relacion_subconsultas,
 )
 from src.prompt_logger import registrar_prompt, actualizar_feedback
+from src.plantillas import (
+    candidatas as _candidatas_plantillas,
+    render as _render_plantilla,
+    PlantillaRenderError,
+)
 from tools.tool_pandas import ejecutar_operacion, catalogo_para_llm
 from tools.buscar_web import buscar_web
+
+# ---------------------------------------------------------------------------
+# Interruptor de la biblioteca de plantillas SQL (ver src/plantillas.py).
+# En '0' el pipeline se comporta exactamente como antes de esta funcionalidad
+# — útil para revertir rápido o para el A/B de verificación.
+# ---------------------------------------------------------------------------
+PLANTILLAS_ENABLED = os.getenv('PLANTILLAS_ENABLED', '1').strip() != '0'
 
 # ---------------------------------------------------------------------------
 # App FastAPI
@@ -133,6 +145,12 @@ def chat(req: ChatRequest):
     # de sesión, puede leer "/analisis por qué..." como una pregunta
     # conceptual y mandarla a CONVERSACIONAL — donde el comando nunca se
     # ejecuta como análisis profundo.
+    # Prefiltro léxico local (sin LLM, ver src/plantillas.py) — solo cuando
+    # hay candidatas se le agrega el bloque de plantillas al prompt del
+    # enrutador y al schema; en el resto de turnos (la mayoría) el enrutador
+    # es idéntico a como era antes de esta funcionalidad, costo 0.
+    cands_plantillas = _candidatas_plantillas(pregunta) if PLANTILLAS_ENABLED else []
+
     if _es_comando_analisis(pregunta)[0]:
         clasificacion = {
             'ruta': 'NUEVA_CONSULTA', 'confianza': 'alta',
@@ -140,9 +158,11 @@ def chat(req: ChatRequest):
             'df_relevante': None, 'operacion_sugerida': None,
             'parametros_sugeridos': None, 'contexto_sql': None,
             'sub_preguntas': None,
+            'plantilla_sugerida': None, 'plantilla_parametros': None,
+            'plantilla_confianza': 'ninguna',
         }
     else:
-        clasificacion = clasificar(pregunta, contexto)
+        clasificacion = clasificar(pregunta, contexto, plantillas_candidatas=cands_plantillas)
     ruta = clasificacion['ruta']
     print(f'[SERVER] ruta: {ruta}')
 
@@ -158,6 +178,7 @@ def chat(req: ChatRequest):
     resultado_sql = None
     sql_usada     = None
     sql_queries   = []   # trazabilidad completa: TODAS las consultas SQL de este turno
+    origen_sql    = ''   # 'plantilla' | 'plantilla_ref' | 'generador' | '' (rutas sin SQL)
 
     try:
         if ruta in ('NUEVA_CONSULTA', 'REFINAMIENTO'):
@@ -198,8 +219,17 @@ def chat(req: ChatRequest):
                     )
                     tipo      = 'consulta'
                 else:
+                    # Plantillas SQL pre-armadas (ver src/plantillas.py) solo
+                    # aplican a NUEVA_CONSULTA — REFINAMIENTO depende del SQL
+                    # anterior en sesión, que una plantilla fija no conoce.
+                    sql_prearmada, plantillas_ref, post_proceso = (
+                        _resolver_plantilla(clasificacion, cands_plantillas)
+                        if ruta == 'NUEVA_CONSULTA' else ('', None, None)
+                    )
                     resultado = procesar_consulta(
-                        pregunta, contexto_refinamiento=contexto_ref, contexto_web=bloque_web
+                        pregunta, contexto_refinamiento=contexto_ref, contexto_web=bloque_web,
+                        sql_prearmada=sql_prearmada, plantillas_referencia=plantillas_ref,
+                        post_proceso=post_proceso,
                     )
                     tipo      = resultado.get('tipo', 'consulta')
 
@@ -209,6 +239,7 @@ def chat(req: ChatRequest):
             resultado_sql = resultado.get('resultado_sql')
             sql_usada     = resultado.get('sql_usada', '')
             sql_queries   = resultado.get('sql_queries', [])
+            origen_sql    = resultado.get('origen_sql', '')
 
             if sub_preguntas:
                 df_creado_nom = ', '.join(resultado.get('dfs_creados', [])) or None
@@ -242,6 +273,7 @@ def chat(req: ChatRequest):
                 resultado_sql = resultado.get('resultado_sql')
                 sql_usada     = resultado.get('sql_usada', '')
                 sql_queries   = resultado.get('sql_queries', [])
+                origen_sql    = resultado.get('origen_sql', '')
                 df_creado_nom = _crear_df_si_aplica(session_id, pregunta, resultado_sql, sql_usada)
             else:
                 respuesta_txt = resultado_conv['respuesta']
@@ -319,6 +351,7 @@ def chat(req: ChatRequest):
         proveedor_llm=proveedor_llm,
         sql_queries=sql_queries,
         prompt_source=req.origen,
+        origen_sql=origen_sql,
     )
 
     return ChatResponse(
@@ -442,6 +475,53 @@ def _crear_df_si_aplica(
     )
     print(f'[SERVER] DataFrame creado: {df_creado_nom} ({len(df)} filas)')
     return df_creado_nom
+
+
+def _resolver_plantilla(clasificacion: dict, candidatas_locales: list[dict]) -> tuple[str, list[dict] | None, dict | None]:
+    """
+    Decide qué hacer con el veredicto de plantillas del enrutador (ver
+    src/plantillas.py y el bloque 'plantilla_*' de clasificar()).
+
+    Devuelve (sql_prearmada, plantillas_referencia, post_proceso) para pasar
+    directo a procesar_consulta():
+      - Nivel A (confianza 'alta' + render() exitoso): sql_prearmada no vacío,
+        procesar_consulta salta generador y validador por completo.
+        post_proceso viene de la plantilla si es 'multi-bloque' (ver
+        plantillas/resumen_ventas.json), None si no.
+      - Nivel B (confianza 'media', o 'alta' con render() fallido):
+        plantillas_referencia = [la plantilla sugerida], se inyecta como
+        ejemplo few-shot pero el generador y el validador siguen corriendo.
+      - Nivel C (confianza 'ninguna', o sin candidatas): ('', None, None) —
+        sin cambios respecto al flujo de siempre.
+
+    Conservador por diseño: cualquier duda (plantilla no encontrada en las
+    candidatas locales, render() que falla) cae a Nivel B o C, nunca fuerza
+    Nivel A — una plantilla mal aplicada devuelve números incorrectos en
+    silencio, que es peor que gastar los tokens del flujo normal.
+    """
+    plantilla_id = clasificacion.get('plantilla_sugerida')
+    confianza    = clasificacion.get('plantilla_confianza', 'ninguna')
+    if not plantilla_id or confianza == 'ninguna':
+        return '', None, None
+
+    plantilla = next((p for p in candidatas_locales if p['id'] == plantilla_id), None)
+    if plantilla is None:
+        # El enrutador sugirió un id que no está en las candidatas que le
+        # ofrecimos — no debería pasar (_parsear_respuesta ya valida contra
+        # esa misma lista), pero por si acaso no se ejecuta nada a ciegas.
+        return '', None, None
+
+    if confianza == 'alta':
+        try:
+            sql = _render_plantilla(plantilla, clasificacion.get('plantilla_parametros') or {})
+            print(f'[SERVER] Plantilla "{plantilla_id}" — Nivel A (ejecución directa)')
+            return sql, None, plantilla.get('post_proceso')
+        except PlantillaRenderError as e:
+            print(f'[SERVER] Plantilla "{plantilla_id}" confianza alta pero render() falló ({e}) — cae a Nivel B')
+            # cae a Nivel B abajo
+
+    print(f'[SERVER] Plantilla "{plantilla_id}" — Nivel B (referencia para el generador)')
+    return '', [plantilla], None
 
 
 def _construir_contexto_refinamiento(session_id: str, clasificacion: dict) -> dict | None:

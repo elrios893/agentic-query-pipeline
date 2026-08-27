@@ -2432,6 +2432,9 @@ def procesar_consulta(
     contexto_refinamiento: dict | None = None,
     permitir_excel_individual: bool = True,
     contexto_web: str = '',
+    sql_prearmada: str = '',
+    plantillas_referencia: list | None = None,
+    post_proceso: dict | None = None,
 ):
     """
     Pipeline principal de consulta.
@@ -2457,6 +2460,28 @@ def procesar_consulta(
             solo inyecta el resultado en el prompt del redactor si se lo pasan.
             El redactor ya sabe interpretar esta sección (ver regla 7 de
             redactor_respuesta.md, cargada siempre, no solo en modo conversacional).
+        sql_prearmada: SQL ya renderizado y validado de una plantilla (ver
+            src/plantillas.py) con confianza alta — cuando viene no vacío,
+            se salta generar_sql_y_validar() por completo (ni generador ni
+            validador corren) y se ejecuta este SQL directamente. Es
+            responsabilidad de quien llama (server.py) haber verificado que
+            el render() no falló antes de pasar esto — procesar_consulta no
+            vuelve a validar el SQL en sí, solo lo ejecuta.
+        plantillas_referencia: lista de plantillas candidatas (confianza
+            media, o alta pero con render fallido) que se inyectan al
+            generador como ejemplos de SQL ya resuelto para preguntas
+            similares — el generador sigue escribiendo el SQL y el
+            validador sigue corriendo normal, esto solo mejora la
+            consistencia del resultado. Ignorado si sql_prearmada no está vacío.
+        post_proceso: campo 'post_proceso' de una plantilla 'multi-bloque'
+            (ver plantillas/resumen_ventas.json y
+            src/plantillas.py::dividir_resultado) — solo tiene efecto junto
+            con sql_prearmada. Cuando viene, el resultado de ejecutar
+            sql_prearmada se separa en varias tablas (una por dimensión) y
+            se redacta como un resumen ejecutivo de varias secciones en UNA
+            sola llamada al redactor, saltando gráfico/Excel/agente
+            analista para esta respuesta (fuera de alcance en v1 — ver
+            diseño de resumen_ventas).
 
     Retorna:
         {
@@ -2495,6 +2520,30 @@ explícitamente pida cambiarlos.
         system_gen = system_gen + contexto_str
 
     # ------------------------------------------------------------------
+    # Plantillas SQL pre-armadas (ver src/plantillas.py) — Nivel B: no hay
+    # sql_prearmada (confianza alta) pero sí candidatas de confianza media,
+    # o alta con render() fallido. Se inyectan como ejemplos ya resueltos
+    # para preguntas similares; el generador sigue escribiendo el SQL y el
+    # validador sigue corriendo, esto solo mejora la consistencia.
+    # ------------------------------------------------------------------
+    if plantillas_referencia and not sql_prearmada:
+        bloques = []
+        for plt in plantillas_referencia:
+            bloques.append(
+                f'- Pregunta similar: "{plt["descripcion"]}"\n  SQL ya validado:\n  {plt["sql"]}'
+            )
+        system_gen = system_gen + f"""
+
+### Ejemplos de SQL ya validado para preguntas similares
+Estas consultas fueron probadas y aprobadas para preguntas parecidas a la
+actual — úsalas como referencia de estructura y patrones (columnas,
+agregaciones, filtros de negocio), adaptando lo que la pregunta actual pida
+distinto (otra dimensión, otro rango, otro N). No las copies literalmente si
+la pregunta actual pide algo diferente.
+{chr(10).join(bloques)}
+"""
+
+    # ------------------------------------------------------------------
     # Detectar comando /analisis y limpiar el prompt
     # ------------------------------------------------------------------
     forzar_analisis, pregunta_limpia = _es_comando_analisis(pregunta)
@@ -2502,7 +2551,18 @@ explícitamente pida cambiarlos.
         print('\n[MODO] Análisis profundo activado via /analisis')
         pregunta = pregunta_limpia
 
-    sql_final = generar_sql_y_validar(pregunta, system_gen, system_val)
+    origen_sql = 'generador'
+    if sql_prearmada:
+        # Nivel A: SQL ya renderizado y validado de una plantilla — se salta
+        # generar_sql_y_validar() por completo (ni generador ni validador
+        # corren). Es el ahorro real de la funcionalidad de plantillas.
+        print(f'[PLANTILLA] Ejecutando SQL pre-armado directo (sin generador ni validador)')
+        sql_final = sql_prearmada
+        origen_sql = 'plantilla'
+    else:
+        sql_final = generar_sql_y_validar(pregunta, system_gen, system_val)
+        if plantillas_referencia:
+            origen_sql = 'plantilla_ref'
 
     print('Ejecutando consulta en PostgreSQL...')
     # Si la SQL pasó el validador pero Postgres igual devuelve un error real
@@ -2522,11 +2582,67 @@ explícitamente pida cambiarlos.
             'sql_usada':     sql_final,
             'imagenes':      [],
             'ruta_excel':    '',
+            'origen_sql':    origen_sql,
             'analisis':      None,
         }
 
     total_filas = resultado.get('total_filas', 0)
     print(f'Resultado: {total_filas} fila(s) obtenidas.\n')
+
+    # ------------------------------------------------------------------
+    # Plantillas multi-bloque (ver plantillas/resumen_ventas.json y
+    # src/plantillas.py::dividir_resultado): un solo SQL trae varios cortes
+    # distintos etiquetados por una columna — se separan en tablas y se
+    # redactan en UNA sola llamada como resumen ejecutivo, saltando por
+    # completo el pipeline normal de abajo (excel/gráfico/analista no
+    # aplican a un resultado con dimensiones heterogéneas mezcladas — fuera
+    # de alcance en v1, ver docstring de post_proceso más arriba).
+    # ------------------------------------------------------------------
+    if post_proceso:
+        import sys as _sys
+        _sys.path.insert(0, str(BASE_DIR))
+        from src.plantillas import dividir_resultado
+        bloques = dividir_resultado(resultado, {'post_proceso': post_proceso})
+        if bloques is None:
+            print('[PLANTILLA] post_proceso declarado pero no se pudo dividir el resultado (columna de etiqueta ausente) — se sigue con el flujo normal de una sola tabla.')
+        else:
+            secciones_bloques = []
+            for b in bloques:
+                tabla_b = formatear_resultado_como_tabla(b) if b.get('rows') else '(sin datos en el período)'
+                secciones_bloques.append(f'### {b["nombre"]} ({b["total_filas"]} filas)\n{tabla_b}')
+
+            system_red = cargar_system_prompt('redactor_respuesta.md', ['Instrucciones (system prompt)'])
+            prompt_red = (
+                f'### Pregunta original del usuario\n"{pregunta}"\n\n'
+                f'### Consulta SQL ejecutada (resumen ejecutivo: un solo escaneo con varios cortes)\n```sql\n{sql_final}\n```\n\n'
+                'Esto es un RESUMEN EJECUTIVO con varios cortes INDEPENDIENTES sobre la misma '
+                'ventana de tiempo (cada corte agrega TODA la venta del período por una '
+                'dimensión distinta — no se suman entre sí, cada tabla es su propio desglose '
+                'completo, no un subconjunto de la anterior). Escribe una respuesta con una '
+                'sección breve por cada corte (2-3 frases de lectura, qué destaca), e incluye '
+                'cada tabla tal cual se te da en markdown bajo su propio encabezado, en el '
+                'mismo orden en que aparecen abajo. Cierra con 1-2 frases de síntesis general.\n\n'
+                + '\n\n'.join(secciones_bloques)
+            )
+            print(f'[{MODELO}] Redactando resumen ejecutivo ({len(bloques)} bloques)...')
+            respuesta_final = llamar_llm(system_red, prompt_red)
+
+            print('\n' + '=' * 60)
+            print('RESPUESTA')
+            print('=' * 60)
+            print(respuesta_final)
+
+            return {
+                'tipo':          'consulta',
+                'respuesta':     respuesta_final,
+                'resultado_sql': resultado,
+                'sql_usada':     sql_final,
+                'sql_queries':   [{'nombre': 'consulta_principal', 'sql': sql_final}],
+                'imagenes':      [],
+                'ruta_excel':    '',
+                'analisis':      None,
+                'origen_sql':    origen_sql,
+            }
 
     # ------------------------------------------------------------------
     # Auto-generar Excel si >100 filas. 'resultado' se mantiene íntegro
@@ -2712,6 +2828,7 @@ explícitamente pida cambiarlos.
         'imagenes':      imagenes_chat,
         'ruta_excel':    ruta_excel,
         'analisis':      analisis_profundo,
+        'origen_sql':    origen_sql,
     }
 
 

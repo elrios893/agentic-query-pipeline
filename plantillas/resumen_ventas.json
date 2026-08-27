@@ -1,0 +1,36 @@
+{
+  "id": "resumen_ventas",
+  "descripcion": "Resumen ejecutivo de ventas en un solo escaneo pesado: desglosa por zona, linea, categoria, talla y top 10 productos mas vendidos, todo en el mismo rango de fechas. Usar para pedidos GENERICOS de ventas (no una sola dimension puntual) o cuando piden explicitamente varios cortes a la vez.",
+  "disparadores": [
+    "dame las ventas",
+    "resumen de ventas",
+    "como van las ventas",
+    "ventas generales",
+    "resumen general de ventas",
+    "dame un resumen completo de ventas",
+    "ventas completo",
+    "ventas de hoy",
+    "ventas del mes",
+    "ventas de esta semana"
+  ],
+  "parametros": {
+    "fecha_inicio":     {"tipo": "fecha",  "requerido": false, "default": "@inicio_ytd"},
+    "fecha_fin":        {"tipo": "fecha",  "requerido": false, "default": "@hoy"},
+    "top_n_producto":   {"tipo": "entero", "requerido": false, "default": 10}
+  },
+  "sql": "WITH base AS MATERIALIZED ( SELECT \"ZONA\", TRIM(\"LINEA_NORM\") AS \"LINEA\", UPPER(TRIM(\"REFERENCIA\")) AS \"REFERENCIA\", TRIM(\"GRUPO_NORM\") AS \"GRUPO\", TRIM(\"TALLA\") AS \"TALLA\", \"CANTIDAD\", \"CANTIDAD\" * COALESCE(\"PVP\", 0) AS \"Venta_Linea\" FROM ventas_unificada WHERE TRIM(\"DESC_MOVIMIENTO\") = 'VENTAS POS' AND TO_DATE(\"FECHA_MVTO\", 'FMDD/FMMM/YYYY') BETWEEN {{fecha_inicio}} AND {{fecha_fin}} ) SELECT 'ZONA' AS \"Dimension\", UPPER(\"ZONA\") AS \"Etiqueta\", SUM(\"CANTIDAD\") AS \"Unidades\", ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) AS \"Ventas\" FROM base WHERE \"ZONA\" IS NOT NULL GROUP BY 1, 2 UNION ALL SELECT 'LINEA', \"LINEA\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"LINEA\" IS NOT NULL GROUP BY 1, 2 UNION ALL SELECT 'CATEGORIA', \"GRUPO\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"GRUPO\" IS NOT NULL GROUP BY 1, 2 UNION ALL SELECT 'TALLA', \"TALLA\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"TALLA\" ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$' GROUP BY 1, 2 UNION ALL SELECT 'PRODUCTO', \"REFERENCIA\", \"Unidades\", \"Ventas\" FROM ( SELECT \"REFERENCIA\", SUM(\"CANTIDAD\") AS \"Unidades\", ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) AS \"Ventas\" FROM base WHERE \"REFERENCIA\" IS NOT NULL GROUP BY 1 ORDER BY \"Ventas\" DESC LIMIT {{top_n_producto}} ) t ORDER BY \"Dimension\", \"Ventas\" DESC;",
+  "post_proceso": {
+    "tipo": "split_por_columna",
+    "columna": "Dimension",
+    "columna_valor": "Etiqueta",
+    "etiquetas": {
+      "ZONA": {"nombre": "Ventas por zona", "columna": "Zona"},
+      "LINEA": {"nombre": "Ventas por línea", "columna": "Línea"},
+      "CATEGORIA": {"nombre": "Ventas por categoría", "columna": "Categoría"},
+      "TALLA": {"nombre": "Ventas por talla", "columna": "Talla"},
+      "PRODUCTO": {"nombre": "Top productos más vendidos", "columna": "Referencia"}
+    }
+  },
+  "notas": "CTE base MATERIALIZED para forzar un solo escaneo de ventas_unificada reusado por los 5 UNION ALL, en vez de 5 escaneos independientes -- ver discusion de 'consulta pesada' en el diseno. TALLA usa la regex de la regla 12 de generador_consultas.md (excluye fechas mal parseadas). PRODUCTO va con top-N porque REFERENCIA es de alta cardinalidad. PVP usa COALESCE(PVP,0) -- ~110 filas en el periodo YTD 2026 tienen PVP nulo (dato real, no error), y sin COALESCE el SUM de un producto de bajo volumen puede salir NULL en vez de 0 si TODAS sus filas tienen PVP nulo (se detecto probando contra la BD real: referencias 105608-00/106521-01/102453-00). v1: sin grafico ni Excel para el resumen multi-bloque, solo texto + tablas -- ver alcance acordado.",
+  "validada_en": "2026-08-27"
+}

@@ -1,0 +1,17 @@
+{
+  "id": "ventas_por_zona_periodo",
+  "descripcion": "Unidades y valor de ventas agrupados por zona en un rango de fechas (por defecto lo que va del año)",
+  "disparadores": [
+    "ventas por zona",
+    "ventas totales por zona",
+    "unidades vendidas por zona",
+    "cuanto hemos vendido por zona",
+    "ventas de cada zona"
+  ],
+  "parametros": {
+    "fecha_inicio": {"tipo": "fecha", "requerido": false, "default": "@inicio_ytd"},
+    "fecha_fin":    {"tipo": "fecha", "requerido": false, "default": "@hoy"}
+  },
+  "sql": "SELECT UPPER(TRIM(\"ZONA\")) AS \"ZONA\", SUM(\"CANTIDAD\") AS \"Unidades_Vendidas\", ROUND(CAST(SUM(\"CANTIDAD\" * \"PVP\") AS numeric), 2) AS \"Valor_Ventas\" FROM ventas_unificada WHERE TRIM(\"DESC_MOVIMIENTO\") = 'VENTAS POS' AND \"ZONA\" IS NOT NULL AND TO_DATE(\"FECHA_MVTO\", 'FMDD/FMMM/YYYY') BETWEEN {{fecha_inicio}} AND {{fecha_fin}} GROUP BY 1 ORDER BY \"Valor_Ventas\" DESC;",
+  "validada_en": "2026-08-27"
+}

@@ -24,6 +24,7 @@ Estructura de cada entrada:
         {"nombre": "consulta_principal", "sql": "SELECT ..."},
         {"nombre": "analista_ronda_1: por que cayeron las ventas de caballero", "sql": "SELECT ..."}
     ],
+    "origen_sql": "plantilla" | "plantilla_ref" | "generador" | "",
     "feedback": "bueno" | "malo" | "regular" | "",
     "feedback_msg": "La respuesta fue precisa y clara"
 }
@@ -101,6 +102,7 @@ def registrar_prompt(
     proveedor_llm: str = '',
     sql_queries: list[dict] | None = None,
     prompt_source: str = '',
+    origen_sql: str = '',
 ) -> str:
     """
     Registra una nueva interaccion. Devuelve el id generado
@@ -115,6 +117,14 @@ def registrar_prompt(
         de SOBRE_DATOS). Cada dict debe tener al menos {"nombre": str, "sql": str}.
     prompt_source : str
         De donde vino la interaccion: "streamlit" | "telegram".
+    origen_sql : str
+        De donde salio el SQL de la consulta principal (ver src/plantillas.py
+        y orquestador.py::procesar_consulta): "plantilla" (ejecutado directo,
+        sin generador ni validador) | "plantilla_ref" (plantilla usada como
+        ejemplo few-shot, el generador igual escribio el SQL) | "generador"
+        (flujo normal) | "" (ruta sin SQL, ej. conversacional). Sirve para
+        medir la tasa de acierto de las plantillas y comparar su feedback
+        contra el de las consultas generadas normalmente.
     """
     entrada = {
         'id': str(uuid.uuid4()),
@@ -128,6 +138,7 @@ def registrar_prompt(
         'exito': exito,
         'archivos_generados': archivos_generados or [],
         'sql_queries': sql_queries or [],
+        'origen_sql': origen_sql,
         'feedback': '',
         'feedback_msg': '',
     }

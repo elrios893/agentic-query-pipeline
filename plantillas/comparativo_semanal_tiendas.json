@@ -1,0 +1,19 @@
+{
+  "id": "comparativo_semanal_tiendas",
+  "descripcion": "Comparacion semanal de ventas entre dos tiendas, agrupado por semana con conteo de dias con datos para detectar semanas parciales",
+  "disparadores": [
+    "comparacion semanal entre tiendas",
+    "ventas por semana de dos tiendas",
+    "comparar ventas semana a semana entre tiendas",
+    "ventas semanales tienda vs tienda"
+  ],
+  "parametros": {
+    "fecha_inicio": {"tipo": "fecha", "requerido": false, "default": "@inicio_ytd"},
+    "fecha_fin":    {"tipo": "fecha", "requerido": false, "default": "@hoy"},
+    "tienda_a":     {"tipo": "texto", "requerido": true},
+    "tienda_b":     {"tipo": "texto", "requerido": true}
+  },
+  "sql": "SELECT DATE_TRUNC('week', TO_DATE(\"FECHA_MVTO\", 'FMDD/FMMM/YYYY')) AS \"Semana\", COUNT(DISTINCT TO_DATE(\"FECHA_MVTO\", 'FMDD/FMMM/YYYY')) AS \"Dias_Con_Datos\", SUM(CASE WHEN UPPER(TRIM(\"DESC_DEPENDENCIA\")) = UPPER({{tienda_a}}) THEN \"CANTIDAD\" * \"PVP\" ELSE 0 END) AS \"Ventas_Tienda_A\", SUM(CASE WHEN UPPER(TRIM(\"DESC_DEPENDENCIA\")) = UPPER({{tienda_b}}) THEN \"CANTIDAD\" * \"PVP\" ELSE 0 END) AS \"Ventas_Tienda_B\" FROM ventas_unificada WHERE TRIM(\"DESC_MOVIMIENTO\") = 'VENTAS POS' AND UPPER(TRIM(\"DESC_DEPENDENCIA\")) IN (UPPER({{tienda_a}}), UPPER({{tienda_b}})) AND TO_DATE(\"FECHA_MVTO\", 'FMDD/FMMM/YYYY') BETWEEN {{fecha_inicio}} AND {{fecha_fin}} GROUP BY 1 ORDER BY 1 ASC;",
+  "notas": "El redactor ya sabe caveatear semanas parciales usando Dias_Con_Datos (regla 11 de redactor_respuesta.md) y consultar_db.py ya formatea 'Semana' como fecha limpia sin hora (_serializar_celda).",
+  "validada_en": "2026-08-27"
+}
