@@ -471,7 +471,7 @@ class SessionStore:
             total = float(df[col].sum())
             metricas[f'total_{col}'] = round(total, 2)
 
-            if col_label:
+            if col_label and df[col].notna().any():
                 idx_max = df[col].idxmax()
                 idx_min = df[col].idxmin()
                 metricas[f'top_1_{col}'] = str(df.loc[idx_max, col_label])

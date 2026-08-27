@@ -404,8 +404,15 @@ def _resultado_a_df(resultado_sql: dict) -> pd.DataFrame:
     cols = resultado_sql.get('columns', [])
     rows = resultado_sql.get('rows', [])
     df   = pd.DataFrame(rows, columns=cols)
-    # Intentar convertir columnas numéricas
+    # Intentar convertir columnas numéricas. Si una columna viene enteramente
+    # NULL (ej. GRUPO_NORM sin dato para esa referencia), pd.to_numeric no
+    # falla — convierte None a NaN igual que con cualquier otra columna
+    # numérica, disfrazando de "numérica" una columna que en realidad es de
+    # texto sin dato. Eso rompe .idxmax()/.idxmin() más adelante (ver
+    # SessionStore._calcular_metricas), así que se deja sin convertir.
     for col in df.columns:
+        if df[col].isna().all():
+            continue
         try:
             df[col] = pd.to_numeric(df[col])
         except (ValueError, TypeError):
