@@ -316,10 +316,23 @@ def dividir_resultado(resultado: dict, plantilla: dict) -> list[dict] | None:
         if columna_renombrada and idx_valor_en_resto is not None:
             cols_bloque[idx_valor_en_resto] = columna_renombrada
 
+        rows_bloque = filas_por_valor[clave]
+        # Columnas descriptivas que solo aplican a ALGUNOS bloques (ej. "Línea"/
+        # "Categoría" del top de productos, NULL a proposito en zona/linea/
+        # categoria/talla -- ver resumen_ventas.json) se descartan solo en los
+        # bloques donde salen 100% NULL, para no mostrar columnas vacias.
+        indices_con_dato = [
+            i for i in range(len(cols_bloque))
+            if any(fila[i] is not None for fila in rows_bloque)
+        ] if rows_bloque else list(range(len(cols_bloque)))
+        if len(indices_con_dato) < len(cols_bloque):
+            cols_bloque = [cols_bloque[i] for i in indices_con_dato]
+            rows_bloque = [[fila[i] for i in indices_con_dato] for fila in rows_bloque]
+
         bloques.append({
             'nombre': nombre,
             'columns': cols_bloque,
-            'rows': filas_por_valor[clave],
-            'total_filas': len(filas_por_valor[clave]),
+            'rows': rows_bloque,
+            'total_filas': len(rows_bloque),
         })
     return bloques

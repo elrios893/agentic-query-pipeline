@@ -1,6 +1,6 @@
 {
   "id": "resumen_ventas",
-  "descripcion": "Resumen ejecutivo de ventas en un solo escaneo pesado: desglosa por zona, linea, categoria, talla y top 10 productos mas vendidos, todo en el mismo rango de fechas. Usar para pedidos GENERICOS de ventas (no una sola dimension puntual) o cuando piden explicitamente varios cortes a la vez.",
+  "descripcion": "Resumen ejecutivo de ventas en un solo escaneo pesado: desglosa por zona, linea, categoria, talla y top 10 productos mas vendidos (con su linea, categoria y top 3 tallas dentro de cada corte), todo en el mismo rango de fechas. Usar para pedidos GENERICOS de ventas (no una sola dimension puntual) o cuando piden explicitamente varios cortes a la vez.",
   "disparadores": [
     "dame las ventas",
     "resumen de ventas",
@@ -14,23 +14,50 @@
     "ventas de esta semana"
   ],
   "parametros": {
-    "fecha_inicio":     {"tipo": "fecha",  "requerido": false, "default": "@inicio_ytd"},
-    "fecha_fin":        {"tipo": "fecha",  "requerido": false, "default": "@hoy"},
-    "top_n_producto":   {"tipo": "entero", "requerido": false, "default": 10}
+    "fecha_inicio": {
+      "tipo": "fecha",
+      "requerido": false,
+      "default": "@inicio_ytd"
+    },
+    "fecha_fin": {
+      "tipo": "fecha",
+      "requerido": false,
+      "default": "@hoy"
+    },
+    "top_n_producto": {
+      "tipo": "entero",
+      "requerido": false,
+      "default": 10
+    }
   },
-  "sql": "WITH base AS MATERIALIZED ( SELECT \"ZONA\", TRIM(\"LINEA_NORM\") AS \"LINEA\", UPPER(TRIM(\"REFERENCIA\")) AS \"REFERENCIA\", TRIM(\"GRUPO_NORM\") AS \"GRUPO\", TRIM(\"TALLA\") AS \"TALLA\", \"CANTIDAD\", \"CANTIDAD\" * COALESCE(\"PVP\", 0) AS \"Venta_Linea\" FROM ventas_unificada WHERE TRIM(\"DESC_MOVIMIENTO\") = 'VENTAS POS' AND TO_DATE(\"FECHA_MVTO\", 'FMDD/FMMM/YYYY') BETWEEN {{fecha_inicio}} AND {{fecha_fin}} ) SELECT 'ZONA' AS \"Dimension\", UPPER(\"ZONA\") AS \"Etiqueta\", SUM(\"CANTIDAD\") AS \"Unidades\", ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) AS \"Ventas\" FROM base WHERE \"ZONA\" IS NOT NULL GROUP BY 1, 2 UNION ALL SELECT 'LINEA', \"LINEA\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"LINEA\" IS NOT NULL GROUP BY 1, 2 UNION ALL SELECT 'CATEGORIA', \"GRUPO\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"GRUPO\" IS NOT NULL GROUP BY 1, 2 UNION ALL SELECT 'TALLA', \"TALLA\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"TALLA\" ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$' GROUP BY 1, 2 UNION ALL SELECT 'PRODUCTO', \"REFERENCIA\", \"Unidades\", \"Ventas\" FROM ( SELECT \"REFERENCIA\", SUM(\"CANTIDAD\") AS \"Unidades\", ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) AS \"Ventas\" FROM base WHERE \"REFERENCIA\" IS NOT NULL GROUP BY 1 ORDER BY \"Ventas\" DESC LIMIT {{top_n_producto}} ) t ORDER BY \"Dimension\", \"Ventas\" DESC;",
+  "sql": "WITH base AS MATERIALIZED ( SELECT \"ZONA\", TRIM(\"LINEA_NORM\") AS \"LINEA\", UPPER(TRIM(\"REFERENCIA\")) AS \"REFERENCIA\", TRIM(\"GRUPO_NORM\") AS \"GRUPO\", TRIM(\"TALLA\") AS \"TALLA\", \"CANTIDAD\", \"CANTIDAD\" * COALESCE(\"PVP\", 0) AS \"Venta_Linea\" FROM ventas_unificada WHERE TRIM(\"DESC_MOVIMIENTO\") = 'VENTAS POS' AND TO_DATE(\"FECHA_MVTO\", 'FMDD/FMMM/YYYY') BETWEEN {{fecha_inicio}} AND {{fecha_fin}} ), tallas_dim(\"Dimension\",\"Etiqueta\",\"TALLA\",\"UnidadesTalla\") AS ( SELECT 'ZONA', UPPER(\"ZONA\"), \"TALLA\", SUM(\"CANTIDAD\") FROM base WHERE \"ZONA\" IS NOT NULL AND \"TALLA\" ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$' GROUP BY 1, 2, 3 UNION ALL SELECT 'LINEA', \"LINEA\", \"TALLA\", SUM(\"CANTIDAD\") FROM base WHERE \"LINEA\" IS NOT NULL AND \"TALLA\" ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$' GROUP BY 1, 2, 3 UNION ALL SELECT 'CATEGORIA', \"GRUPO\", \"TALLA\", SUM(\"CANTIDAD\") FROM base WHERE \"GRUPO\" IS NOT NULL AND \"TALLA\" ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$' GROUP BY 1, 2, 3 UNION ALL SELECT 'PRODUCTO', \"REFERENCIA\", \"TALLA\", SUM(\"CANTIDAD\") FROM base WHERE \"REFERENCIA\" IS NOT NULL AND \"TALLA\" ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$' GROUP BY 1, 2, 3 ), tallas_rank AS ( SELECT \"Dimension\", \"Etiqueta\", \"TALLA\", \"UnidadesTalla\", SUM(\"UnidadesTalla\") OVER (PARTITION BY \"Dimension\", \"Etiqueta\") AS \"TotalCorte\", ROW_NUMBER() OVER (PARTITION BY \"Dimension\", \"Etiqueta\" ORDER BY \"UnidadesTalla\" DESC) AS rn FROM tallas_dim ), top_tallas(\"Dimension\",\"Etiqueta\",\"Top_Tallas\") AS ( SELECT \"Dimension\", \"Etiqueta\", STRING_AGG( \"TALLA\" || ' (' || ROUND(100.0 * \"UnidadesTalla\" / NULLIF(\"TotalCorte\", 0))::int::text || '%)', ', ' ORDER BY rn ) FROM tallas_rank WHERE rn <= 3 GROUP BY 1, 2 ), zona(\"Dimension\",\"Etiqueta\",\"Unidades\",\"Ventas\") AS ( SELECT 'ZONA', UPPER(\"ZONA\"), SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"ZONA\" IS NOT NULL GROUP BY 1, 2 ), linea(\"Dimension\",\"Etiqueta\",\"Unidades\",\"Ventas\") AS ( SELECT 'LINEA', \"LINEA\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"LINEA\" IS NOT NULL GROUP BY 1, 2 ), categoria(\"Dimension\",\"Etiqueta\",\"Unidades\",\"Ventas\") AS ( SELECT 'CATEGORIA', \"GRUPO\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"GRUPO\" IS NOT NULL GROUP BY 1, 2 ), talla(\"Dimension\",\"Etiqueta\",\"Unidades\",\"Ventas\") AS ( SELECT 'TALLA', \"TALLA\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2) FROM base WHERE \"TALLA\" ~ '^(XS|S|M|L|XL|XXL|[0-9]{1,2}|[0-9]{1,2}[WLT])$' GROUP BY 1, 2 ), producto(\"REFERENCIA\",\"Unidades\",\"Ventas\",\"Linea\",\"Categoria\") AS ( SELECT \"REFERENCIA\", SUM(\"CANTIDAD\"), ROUND(CAST(SUM(\"Venta_Linea\") AS numeric), 2), MAX(\"LINEA\"), MAX(\"GRUPO\") FROM base WHERE \"REFERENCIA\" IS NOT NULL GROUP BY 1 ORDER BY 3 DESC LIMIT {{top_n_producto}} ) SELECT z.\"Dimension\" AS \"Dimension\", z.\"Etiqueta\" AS \"Etiqueta\", z.\"Unidades\" AS \"Unidades\", z.\"Ventas\" AS \"Ventas\", NULL::text AS \"Línea\", NULL::text AS \"Categoría\", tt.\"Top_Tallas\" AS \"Top tallas\" FROM zona z LEFT JOIN top_tallas tt ON tt.\"Dimension\" = z.\"Dimension\" AND tt.\"Etiqueta\" = z.\"Etiqueta\" UNION ALL SELECT l.\"Dimension\", l.\"Etiqueta\", l.\"Unidades\", l.\"Ventas\", NULL, NULL, tt.\"Top_Tallas\" FROM linea l LEFT JOIN top_tallas tt ON tt.\"Dimension\" = l.\"Dimension\" AND tt.\"Etiqueta\" = l.\"Etiqueta\" UNION ALL SELECT c.\"Dimension\", c.\"Etiqueta\", c.\"Unidades\", c.\"Ventas\", NULL, NULL, tt.\"Top_Tallas\" FROM categoria c LEFT JOIN top_tallas tt ON tt.\"Dimension\" = c.\"Dimension\" AND tt.\"Etiqueta\" = c.\"Etiqueta\" UNION ALL SELECT t.\"Dimension\", t.\"Etiqueta\", t.\"Unidades\", t.\"Ventas\", NULL, NULL, NULL FROM talla t UNION ALL SELECT 'PRODUCTO', p.\"REFERENCIA\", p.\"Unidades\", p.\"Ventas\", p.\"Linea\", p.\"Categoria\", tt.\"Top_Tallas\" FROM producto p LEFT JOIN top_tallas tt ON tt.\"Dimension\" = 'PRODUCTO' AND tt.\"Etiqueta\" = p.\"REFERENCIA\" ORDER BY \"Dimension\", \"Ventas\" DESC;",
   "post_proceso": {
     "tipo": "split_por_columna",
     "columna": "Dimension",
     "columna_valor": "Etiqueta",
     "etiquetas": {
-      "ZONA": {"nombre": "Ventas por zona", "columna": "Zona"},
-      "LINEA": {"nombre": "Ventas por línea", "columna": "Línea"},
-      "CATEGORIA": {"nombre": "Ventas por categoría", "columna": "Categoría"},
-      "TALLA": {"nombre": "Ventas por talla", "columna": "Talla"},
-      "PRODUCTO": {"nombre": "Top productos más vendidos", "columna": "Referencia"}
+      "ZONA": {
+        "nombre": "Ventas por zona",
+        "columna": "Zona"
+      },
+      "LINEA": {
+        "nombre": "Ventas por línea",
+        "columna": "Línea"
+      },
+      "CATEGORIA": {
+        "nombre": "Ventas por categoría",
+        "columna": "Categoría"
+      },
+      "TALLA": {
+        "nombre": "Ventas por talla",
+        "columna": "Talla"
+      },
+      "PRODUCTO": {
+        "nombre": "Top productos más vendidos",
+        "columna": "Referencia"
+      }
     }
   },
-  "notas": "CTE base MATERIALIZED para forzar un solo escaneo de ventas_unificada reusado por los 5 UNION ALL, en vez de 5 escaneos independientes -- ver discusion de 'consulta pesada' en el diseno. TALLA usa la regex de la regla 12 de generador_consultas.md (excluye fechas mal parseadas). PRODUCTO va con top-N porque REFERENCIA es de alta cardinalidad. PVP usa COALESCE(PVP,0) -- ~110 filas en el periodo YTD 2026 tienen PVP nulo (dato real, no error), y sin COALESCE el SUM de un producto de bajo volumen puede salir NULL en vez de 0 si TODAS sus filas tienen PVP nulo (se detecto probando contra la BD real: referencias 105608-00/106521-01/102453-00). v1: sin grafico ni Excel para el resumen multi-bloque, solo texto + tablas -- ver alcance acordado.",
-  "validada_en": "2026-08-27"
+  "notas": "CTE base MATERIALIZED para forzar un solo escaneo de ventas_unificada reusado por todo el resto de la consulta (los CTEs siguientes operan sobre 'base' ya materializada, no vuelven a tocar la tabla real). TALLA usa la regex de la regla 12 de generador_consultas.md (excluye fechas mal parseadas). PRODUCTO va con top-N porque REFERENCIA es de alta cardinalidad. PVP usa COALESCE(PVP,0) -- ~110 filas en el periodo YTD 2026 tienen PVP nulo (dato real, no error), y sin COALESCE el SUM de un producto de bajo volumen puede salir NULL en vez de 0 si TODAS sus filas tienen PVP nulo (se detecto probando contra la BD real: referencias 105608-00/106521-01/102453-00). 'Linea'/'Categoria' del top de productos son MAX() sobre el grupo, dato descriptivo, no afectan Unidades/Ventas. 'Top tallas' es un NUEVO corte anidado: dentro de cada zona/linea/categoria/producto, muestra las top 3 tallas por PARTICIPACION DE UNIDADES (no de ventas) de ESE corte especifico, via tallas_dim/tallas_rank/top_tallas + LEFT JOIN -- no agrega filas ni cambia Unidades/Ventas del corte, solo agrega una columna de texto. NULL para el bloque TALLA (no aplica a si mismo) y para cortes sin ninguna fila con talla valida (ej. accesorios como '51 - Bolso'). Todas las columnas que salen 100% NULL dentro de un bloque especifico (Linea/Categoria en zona-linea-categoria-talla, Top tallas en TALLA) se descartan automaticamente en dividir_resultado() -- ver src/plantillas.py. v1: sin grafico ni Excel para el resumen multi-bloque, solo texto + tablas -- ver alcance acordado.",
+  "validada_en": "2026-08-28"
 }
