@@ -73,15 +73,41 @@ NUEVA_CONSULTA
   Ejemplos: "dame las ventas de marzo", "top 10 tiendas de Bogotá", "ventas por línea en enero".
 
 REFINAMIENTO
-  El mensaje modifica, filtra o extiende la consulta anterior.
+  El mensaje necesita una columna, agrupación, período o filtro que NINGÚN
+  DataFrame activo tiene hoy — hace falta una consulta SQL nueva — pero SÍ
+  está relacionado con la conversación: reutiliza algo que ya se resolvió
+  en un turno anterior (un nombre concreto de tienda, referencia, zona o
+  período) en vez de partir de cero.
   Señales: "y en Bogotá?", "solo de Antioquia", "lo mismo pero por tienda", "ordénalo por valor",
-           "ahora muéstrame por semana", "filtra solo caballero".
+           "ahora muéstrame por semana", "filtra solo caballero",
+           "de la tienda top, cuál es la referencia más vendida" (la "tienda
+           top" ya se resolvió en un turno anterior, pero "referencia" es una
+           columna que el df de tiendas no tiene — hace falta SQL nuevo),
+           "de esa referencia, en qué zonas vende más" (misma lógica: la
+           referencia viene de memoria, "zonas" es una dimensión nueva).
+  Regla clave: si la respuesta exige una columna que ningún df activo tiene,
+  ES REFINAMIENTO — nunca SOBRE_DATOS — aunque la pregunta dependa de o
+  mencione datos ya vistos.
 
 SOBRE_DATOS
-  El mensaje pregunta algo que puede responderse con los datos ya obtenidos,
-  sin necesitar una nueva consulta a la base de datos.
+  El mensaje se responde ÚNICAMENTE con columnas y filas que YA existen en
+  alguno de los DataFrames activos — ninguna columna, agrupación o período
+  nuevo. Dos fuentes posibles, en este orden:
+  1. Las "métricas ya calculadas" que se listan junto a cada df (total,
+     top_1, min_1 por columna numérica) — si la pregunta coincide con una
+     de esas, el valor ya está calculado, ni siquiera hace falta elegir
+     una operación.
+  2. Una operación EXACTA del catálogo de abajo (top_n, bottom_n,
+     suma_por_grupo, porcentaje_de_total, etc.) sobre columnas que el df
+     YA tiene.
   Señales: "cuánto representa X del total?", "cuál es la diferencia entre A y B?",
-           "qué porcentaje es eso?", "cuánto suman los 3 primeros?", "compara estos dos".
+           "qué porcentaje es eso?", "cuánto suman los 3 primeros?", "compara estos dos",
+           "cuál es la mejor/peor de este ranking?", "cuál es la segunda de la lista?",
+           "del ranking anterior, cuál es la peor tienda?" (si "peor tienda" es
+           una fila que YA está en el df de tiendas, no hace falta ir a la BD).
+  Prueba rápida: si te alcanza con reordenar/agrupar/sumar/filtrar las
+  columnas que el df YA tiene, es SOBRE_DATOS. Si necesitas UNA columna que
+  el df no tiene, no lo es — es REFINAMIENTO.
 
 CONVERSACIONAL
   El mensaje no requiere datos ni cálculos. Es una pregunta conceptual, explicación,
@@ -92,8 +118,11 @@ CONVERSACIONAL
 REGLAS ESTRICTAS:
 - Si hay duda entre REFINAMIENTO y NUEVA_CONSULTA: elige REFINAMIENTO si el mensaje
   usa palabras como "y", "también", "ahora", "lo mismo", "solo", "filtra", "pero".
-- Si hay duda entre SOBRE_DATOS y REFINAMIENTO: elige SOBRE_DATOS si la pregunta
-  puede responderse matemáticamente con los datos que ya están en memoria.
+- Si hay duda entre SOBRE_DATOS y REFINAMIENTO: pregúntate "¿la respuesta
+  necesita una columna o agrupación que NINGÚN df activo tiene hoy?". Si sí,
+  es REFINAMIENTO, aunque el mensaje use lenguaje de comparación/porcentaje/
+  diferencia y "suene" a SOBRE_DATOS. Si no —todo lo necesario ya está en un
+  df activo, incluidas sus métricas ya calculadas— es SOBRE_DATOS.
 - Si no hay historial previo (primer mensaje): SIEMPRE es NUEVA_CONSULTA.
 - Responde ÚNICAMENTE con un JSON válido. Sin texto adicional.
 
@@ -439,12 +468,37 @@ def _construir_prompt(pregunta: str, contexto: dict, plantillas_candidatas: list
 
     if dfs:
         partes.append('--- DataFrames en memoria ---')
+        # Cruce con el historial: el turno que creó cada df (si sigue dentro
+        # de la ventana de historial que ve el LLM) aporta período/filtros
+        # que no vienen en la metadata del propio df — ayuda a distinguir
+        # dos dfs con descripción parecida (ej. "ventas por tienda" en
+        # Antioquia vs. en Bogotá) sin tener que renombrar df_1/df_2.
+        # +1: MetaDF.turno_creado se graba con turno_actual ANTES de
+        # incrementar (session_store.py::crear_df); Turno.turno se graba con
+        # turno_actual + 1 y LUEGO se incrementa (agregar_turno) — mismo
+        # turno humano, dos numeraciones desfasadas en 1.
+        turnos_hist = {t['turno']: t for t in historial}
         for df in dfs:
-            cols = list(df['columnas'].keys())
-            partes.append(
+            cols_tipo = ', '.join(f'{c} ({t})' for c, t in df['columnas'].items())
+            linea = (
                 f'{df["nombre"]}: "{df["descripcion"]}" | '
-                f'{df["total_filas"]} filas | columnas: {cols}'
+                f'{df["total_filas"]} filas | columnas: [{cols_tipo}]'
             )
+            # Métricas ya calculadas (total/top_1/min_1 por columna numérica)
+            # — clave para que el LLM reconozca preguntas SOBRE_DATOS que ni
+            # siquiera necesitan una operación Pandas, el valor ya está.
+            if df.get('metricas'):
+                linea += f' | métricas ya calculadas: {df["metricas"]}'
+            t_creacion = turnos_hist.get(df.get('turno_creado', -1) + 1)
+            if t_creacion:
+                detalles = []
+                if t_creacion.get('periodo'):
+                    detalles.append(f'período: {t_creacion["periodo"]}')
+                if t_creacion.get('filtros'):
+                    detalles.append(f'filtros: {t_creacion["filtros"]}')
+                if detalles:
+                    linea += ' | ' + ' | '.join(detalles)
+            partes.append(linea)
         partes.append('')
 
     # Bloque de plantillas SQL pre-armadas — solo aparece cuando un prefiltro

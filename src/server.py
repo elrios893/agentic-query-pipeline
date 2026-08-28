@@ -287,6 +287,7 @@ def chat(req: ChatRequest):
             duracion_seg=duracion_error,
             exito=False,
             prompt_source=req.origen,
+            turno=sesion.turno_actual,
         )
         # Antes: raise HTTPException(500, detail=str(e)) — el usuario veía el
         # texto crudo de la excepción (mensajes de Postgres, tracebacks, etc).
@@ -352,6 +353,7 @@ def chat(req: ChatRequest):
         sql_queries=sql_queries,
         prompt_source=req.origen,
         origen_sql=origen_sql,
+        turno=sesion.turno_actual,
     )
 
     return ChatResponse(
@@ -527,20 +529,63 @@ def _resolver_plantilla(clasificacion: dict, candidatas_locales: list[dict]) -> 
 def _construir_contexto_refinamiento(session_id: str, clasificacion: dict) -> dict | None:
     """
     Construye el dict de contexto para REFINAMIENTO a partir del último df activo.
+
+    Grupo B (ver discusión de diseño): una pregunta de REFINAMIENTO muchas veces
+    referencia una entidad superlativa ya resuelta en memoria ("la tienda top",
+    "esa referencia") pero pide una columna que el df activo no tiene, así que
+    hace falta SQL nuevo igual. Antes este contexto solo pasaba el SQL anterior
+    y nombres de columna en texto — el generador tenía que RE-DERIVAR "cuál es
+    el top" con su propio subquery, con riesgo de perder filtros del turno
+    anterior o de discrepar del valor que Pandas ya calculó. Ahora se inyectan
+    también:
+      - 'valores_resueltos': las métricas ya calculadas del df (top_1_X,
+        min_1_X, total_X — ver SessionStore._calcular_metricas) para que el
+        generador use el valor LITERAL en vez de recalcularlo.
+      - 'ajuste_sugerido': el campo 'contexto_sql' que el enrutador ya
+        produce en su misma llamada de clasificación (antes se descartaba
+        por completo) — es un hint en lenguaje natural o SQL tentativo, NO
+        autoritativo (el enrutador no ve el esquema real de la BD), así que
+        se marca como tal en el prompt del generador.
     """
     dfs = store.listar_dfs_activos(session_id)
     if not dfs:
+        print('  [REFINAMIENTO] sin DataFrames activos en la sesión — sin contexto de refinamiento.')
         return None
 
     # Usar el df más reciente
     df_meta = max(dfs, key=lambda m: m.turno_creado)
 
+    # periodo_previo: cruzar con el historial de la sesión — el turno que
+    # creó este df ya detectó un período (ver Turno.periodo_detectado en
+    # session_store.py), antes este campo quedaba hardcodeado en ''.
+    # Nota del +1: MetaDF.turno_creado se graba con sesion.turno_actual ANTES
+    # de incrementar (en crear_df), mientras que Turno.turno se graba con
+    # sesion.turno_actual + 1 y LUEGO se incrementa (en agregar_turno) — el
+    # mismo turno humano queda con dos números distintos en cada estructura.
+    periodo_previo = ''
+    for t in store.obtener_historial(session_id):
+        if t.turno == df_meta.turno_creado + 1:
+            periodo_previo = t.periodo_detectado
+            break
+
+    ajuste_sugerido = clasificacion.get('contexto_sql') or ''
+
+    print(f'  [REFINAMIENTO] df base: {df_meta.nombre} ("{df_meta.descripcion}") | turno_creado={df_meta.turno_creado}')
+    if df_meta.metricas:
+        print(f'  [REFINAMIENTO] valores ya resueltos en memoria (se inyectan como filtro literal): {df_meta.metricas}')
+    else:
+        print('  [REFINAMIENTO] el df base no tiene métricas precalculadas (sin columnas numéricas).')
+    if ajuste_sugerido:
+        print(f'  [REFINAMIENTO] ajuste sugerido por el enrutador (hint, no autoritativo): {ajuste_sugerido}')
+
     return {
-        'sql_anterior':     df_meta.sql_original,
-        'columnas_previas': list(df_meta.columnas.keys()),
-        'periodo_previo':   '',
-        'filtros_previos':  _extraer_filtros(df_meta.sql_original),
-        'descripcion_df':   df_meta.descripcion,
+        'sql_anterior':      df_meta.sql_original,
+        'columnas_previas':  list(df_meta.columnas.keys()),
+        'periodo_previo':    periodo_previo,
+        'filtros_previos':   _extraer_filtros(df_meta.sql_original),
+        'descripcion_df':    df_meta.descripcion,
+        'valores_resueltos': df_meta.metricas,
+        'ajuste_sugerido':   ajuste_sugerido,
     }
 
 

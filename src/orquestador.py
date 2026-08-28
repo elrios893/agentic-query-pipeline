@@ -2507,6 +2507,9 @@ def procesar_consulta(
     # ------------------------------------------------------------------
     if contexto_refinamiento:
         ctx = contexto_refinamiento
+        valores_resueltos = ctx.get('valores_resueltos') or {}
+        ajuste_sugerido    = ctx.get('ajuste_sugerido') or ''
+
         contexto_str = f"""
 ### Contexto de la consulta anterior (REFINAMIENTO)
 El usuario está refinando o extendiendo una consulta previa. Usa este contexto:
@@ -2515,12 +2518,45 @@ El usuario está refinando o extendiendo una consulta previa. Usa este contexto:
 - Período detectado: {ctx.get('periodo_previo', '')}
 - Filtros activos: {ctx.get('filtros_previos', [])}
 - Descripción: {ctx.get('descripcion_df', '')}
-
+"""
+        if valores_resueltos:
+            contexto_str += f"""
+- Valores YA RESUELTOS en memoria (filas_completas del resultado anterior si
+  tenía pocas filas, y/o top_1/min_1/total por columna): {valores_resueltos}
+  Si la pregunta del usuario menciona una entidad superlativa ("la tienda
+  top", "la mejor", "la peor", "esa referencia", "el que más vendió") y su
+  valor EXACTO aparece arriba (como valor de alguna columna en
+  "filas_completas", o como top_1_X/min_1_X), ÚSALO LITERAL en el WHERE de
+  la nueva consulta (ej. WHERE tienda = 'valor_exacto_de_arriba'). NO
+  reconstruyas ese valor con un subquery propio — el subquery puede perder
+  filtros del contexto anterior o discrepar del valor ya calculado.
+  IMPORTANTE: si el valor que necesitás NO aparece explícitamente arriba
+  (ej. la columna que buscás no está en ninguna fila ni en top_1/min_1),
+  NUNCA inventes un placeholder ni un valor de relleno — en ese caso hacé lo
+  que harías sin este bloque: resolvé la referencia con tu propio SQL
+  (subquery o join) usando "SQL anterior" y "Descripción" de abajo.
+"""
+        if ajuste_sugerido:
+            contexto_str += f"""
+- Pista del clasificador sobre qué ajuste hace falta: {ajuste_sugerido}
+  Es una sugerencia en lenguaje natural (o SQL tentativo) de un modelo que
+  NO ve el esquema real de la base de datos — tómala como orientación, pero
+  verifica cualquier nombre de tabla/columna contra el esquema real antes de
+  usarlo; no la copies literalmente si no coincide con el esquema.
+"""
+        contexto_str += """
 Genera una nueva SQL que incorpore el refinamiento solicitado por el usuario,
 manteniendo los filtros base del contexto anterior a menos que el usuario
 explícitamente pida cambiarlos.
 """
         system_gen = system_gen + contexto_str
+        print(
+            f'  [REFINAMIENTO] contexto inyectado al generador — '
+            f'período: {ctx.get("periodo_previo") or "(no detectado)"} | '
+            f'filtros previos: {ctx.get("filtros_previos", [])} | '
+            f'valores resueltos: {valores_resueltos or "(ninguno)"} | '
+            f'pista del clasificador: {ajuste_sugerido or "(ninguna)"}'
+        )
 
     # ------------------------------------------------------------------
     # Plantillas SQL pre-armadas (ver src/plantillas.py) — Nivel B: no hay

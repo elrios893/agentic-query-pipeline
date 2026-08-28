@@ -461,6 +461,19 @@ class SessionStore:
         if df.empty:
             return metricas
 
+        # Resultados muy pequeños (<=3 filas) suelen ser justo la entidad que
+        # un turno de REFINAMIENTO/SOBRE_DATOS va a referenciar después ("esa
+        # referencia", "la tienda top" tras un LIMIT 1 del turno anterior).
+        # Guardar la fila completa es barato (el propio tamaño del df ya es
+        # mínimo) y evita perder columnas: top_1_X/min_1_X de abajo solo
+        # etiquetan con LA PRIMERA columna de texto, así que un df de 1 fila
+        # con [TIENDA, REFERENCIA, GRUPO, Unidades_Vendidas] perdía
+        # REFERENCIA y GRUPO por completo — el consumidor (REFINAMIENTO) se
+        # quedaba sin el valor que necesitaba inyectar como filtro literal y
+        # el generador terminaba inventando un placeholder.
+        if len(df) <= 3:
+            metricas['filas_completas'] = df.astype(object).where(pd.notna(df), None).to_dict('records')
+
         # Columnas numéricas
         cols_num = df.select_dtypes(include='number').columns.tolist()
         # Primera columna de texto como etiqueta

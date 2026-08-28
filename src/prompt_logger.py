@@ -15,6 +15,8 @@ Estructura de cada entrada:
     "pregunta": "ventas por departamento",
     "tipo": "consulta" | "informe" | "grafico" | "sobre_datos" | "conversacional" | "error",
     "prompt_source": "streamlit" | "telegram",
+    "user": "default",
+    "turno": 3,
     "modelo_llm": "llama-3.3-70b-versatile",
     "proveedor_llm": "groq",
     "duracion_seg": 4.2,
@@ -103,6 +105,8 @@ def registrar_prompt(
     sql_queries: list[dict] | None = None,
     prompt_source: str = '',
     origen_sql: str = '',
+    user: str = 'default',
+    turno: int = 0,
 ) -> str:
     """
     Registra una nueva interaccion. Devuelve el id generado
@@ -117,6 +121,16 @@ def registrar_prompt(
         de SOBRE_DATOS). Cada dict debe tener al menos {"nombre": str, "sql": str}.
     prompt_source : str
         De donde vino la interaccion: "streamlit" | "telegram".
+    user : str
+        Identidad del usuario que disparo la interaccion. Por ahora sin una
+        fuente real de identidad (Streamlit/Telegram no autentican usuarios
+        individuales todavia), queda en "default" — el campo ya existe en el
+        log para cuando se conecte esa fuente, sin tener que migrar entradas
+        viejas.
+    turno : int
+        Numero de turno dentro de la sesion (ver Sesion.turno_actual en
+        session_store.py) — permite cruzar una entrada del log con el
+        historial de esa sesion.
     origen_sql : str
         De donde salio el SQL de la consulta principal (ver src/plantillas.py
         y orquestador.py::procesar_consulta): "plantilla" (ejecutado directo,
@@ -132,6 +146,8 @@ def registrar_prompt(
         'pregunta': pregunta,
         'tipo': tipo,
         'prompt_source': prompt_source,
+        'user': user,
+        'turno': turno,
         'modelo_llm': modelo_llm,
         'proveedor_llm': proveedor_llm,
         'duracion_seg': round(duracion_seg, 2),
