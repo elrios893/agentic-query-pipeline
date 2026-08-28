@@ -2481,7 +2481,10 @@ def procesar_consulta(
             se redacta como un resumen ejecutivo de varias secciones en UNA
             sola llamada al redactor, saltando gráfico/Excel/agente
             analista para esta respuesta (fuera de alcance en v1 — ver
-            diseño de resumen_ventas).
+            diseño de resumen_ventas). Si el resultado trae una fila con
+            Dimension='TOTAL', se extrae antes de dividir_resultado() y se
+            antepone como texto fijo (números tal cual, no pasan por el
+            LLM) en vez de tratarse como un corte más.
 
     Retorna:
         {
@@ -2602,6 +2605,49 @@ la pregunta actual pide algo diferente.
         import sys as _sys
         _sys.path.insert(0, str(BASE_DIR))
         from src.plantillas import dividir_resultado
+
+        # Fila 'TOTAL' (si la plantilla la trae): totales del período
+        # calculados de forma independiente a cualquier corte (ver
+        # resumen_ventas.json — un corte como ZONA filtra WHERE ZONA IS NOT
+        # NULL y por eso su suma queda por debajo del total real). Se
+        # extrae y se saca de 'resultado' ANTES de dividir_resultado() para
+        # que no aparezca como un bloque más — es un resumen aparte, no un
+        # corte. El texto se arma en Python con los números tal cual salen
+        # de la BD, nunca se le pide al LLM que los repita o recalcule.
+        texto_totales = ''
+        columnas_res = resultado.get('columns', [])
+        filas_res = resultado.get('rows', [])
+        if 'Dimension' in columnas_res:
+            idx_dim = columnas_res.index('Dimension')
+            filas_total = [r for r in filas_res if r[idx_dim] == 'TOTAL']
+            if filas_total:
+                fila = filas_total[0]
+
+                def _col(nombre):
+                    return fila[columnas_res.index(nombre)] if nombre in columnas_res else None
+
+                unidades_tot = _col('Unidades')
+                ventas_tot = _col('Ventas')
+                referencias_tot = _col('Referencias')
+
+                partes = []
+                if unidades_tot is not None:
+                    partes.append(f'las unidades totales de este período fueron **{int(unidades_tot):,}**')
+                if ventas_tot is not None:
+                    partes.append(f'el valor en ventas fue de **${ventas_tot:,.0f} COP**')
+                if unidades_tot and ventas_tot:
+                    precio_prom = ventas_tot / unidades_tot
+                    partes.append(f'un precio promedio por unidad de ${precio_prom:,.0f} COP')
+                if referencias_tot is not None:
+                    partes.append(f'se vendieron {int(referencias_tot):,} referencias distintas')
+
+                if partes:
+                    frase = '; '.join(partes)
+                    frase = frase[0].upper() + frase[1:]
+                    texto_totales = frase + '.\n\n'
+
+                resultado = {**resultado, 'rows': [r for r in filas_res if r[idx_dim] != 'TOTAL']}
+
         bloques = dividir_resultado(resultado, {'post_proceso': post_proceso})
         if bloques is None:
             print('[PLANTILLA] post_proceso declarado pero no se pudo dividir el resultado (columna de etiqueta ausente) — se sigue con el flujo normal de una sola tabla.')
@@ -2618,14 +2664,17 @@ la pregunta actual pide algo diferente.
                 'Esto es un RESUMEN EJECUTIVO con varios cortes INDEPENDIENTES sobre la misma '
                 'ventana de tiempo (cada corte agrega TODA la venta del período por una '
                 'dimensión distinta — no se suman entre sí, cada tabla es su propio desglose '
-                'completo, no un subconjunto de la anterior). Escribe una respuesta con una '
-                'sección breve por cada corte (2-3 frases de lectura, qué destaca), e incluye '
-                'cada tabla tal cual se te da en markdown bajo su propio encabezado, en el '
-                'mismo orden en que aparecen abajo. Cierra con 1-2 frases de síntesis general.\n\n'
+                'completo, no un subconjunto de la anterior). Al usuario ya se le va a mostrar, '
+                'ANTES de tu respuesta, una línea fija con los totales del período — no la '
+                'repitas ni la recalcules, ve directo a los cortes. Escribe una respuesta con '
+                'una sección breve por cada corte (2-3 frases de lectura, qué destaca), e '
+                'incluye cada tabla tal cual se te da en markdown bajo su propio encabezado, en '
+                'el mismo orden en que aparecen abajo. Cierra con 1-2 frases de síntesis '
+                'general.\n\n'
                 + '\n\n'.join(secciones_bloques)
             )
             print(f'[{MODELO}] Redactando resumen ejecutivo ({len(bloques)} bloques)...')
-            respuesta_final = llamar_llm(system_red, prompt_red)
+            respuesta_final = texto_totales + llamar_llm(system_red, prompt_red)
 
             print('\n' + '=' * 60)
             print('RESPUESTA')
