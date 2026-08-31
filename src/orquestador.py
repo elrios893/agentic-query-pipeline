@@ -23,7 +23,7 @@ if sys.stderr.encoding and sys.stderr.encoding.lower() != 'utf-8':
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Provider abstraction — configurado via .env: LLM_PROVIDER=groq|cerebras|gemini
+# Provider abstraction — configurado via .env: LLM_PROVIDER=groq|cerebras|deepinfra|gemini
 # ---------------------------------------------------------------------------
 PROVIDER = os.getenv('LLM_PROVIDER', 'groq').lower()
 
@@ -40,13 +40,21 @@ elif PROVIDER == 'cerebras':
     )
     MODELO  = os.getenv('CEREBRAS_MODEL', 'gemma-4-31b')
 
+elif PROVIDER == 'deepinfra':
+    from openai import OpenAI
+    _client = OpenAI(
+        api_key=os.getenv('DEEPINFRA_API_KEY'),
+        base_url='https://api.deepinfra.com/v1/openai/',
+    )
+    MODELO  = os.getenv('DEEPINFRA_MODEL', 'google/gemma-4-31B-it-turbo')
+
 elif PROVIDER == 'gemini':
     from google import genai
     _client = genai.Client(api_key=os.getenv('GEMINI_API_KEY'))
     MODELO  = os.getenv('GEMINI_MODEL', 'gemini-2.0-flash')
 
 else:
-    raise ValueError(f'LLM_PROVIDER desconocido: {PROVIDER}. Usa: groq, cerebras, gemini')
+    raise ValueError(f'LLM_PROVIDER desconocido: {PROVIDER}. Usa: groq, cerebras, deepinfra, gemini')
 
 # ---------------------------------------------------------------------------
 # Cliente de clasificación de intención — siempre Groq (llama-3.1-8b-instant)
