@@ -373,6 +373,20 @@ Consulta explícita sobre dato crudo/original   → ventas_2025 o ventas_2026
     ```
     Este patrón aplica igual cuando la agrupación por semana está desglosada en varias columnas (ej. una serie de `SUM(CASE WHEN ...)` por tienda) — el `"Dias_Con_Datos"` va una sola vez por fila, no por columna.
 
+28. **Filtro por una `REFERENCIA` puntual — el usuario suele dar solo la base de 6 dígitos, sin la versión**: el valor real de `"REFERENCIA"` en los datos tiene el formato `BASE-VERSION` (ej: `106231-00`), donde los primeros 6 dígitos son la referencia y los 2 dígitos después del guion son la versión/color de esa prenda. La mayoría de las veces el usuario pregunta solo por la base (ej: "ventas de la referencia 106231", "cuánto vendió el 106231"), sin el guion ni la versión.
+
+    - Si el número que da el usuario **no trae guion** (solo los 6 dígitos base): es una referencia base — filtra por prefijo para traer todas sus versiones/colores juntas:
+      ```sql
+      WHERE LEFT(TRIM("REFERENCIA"), 6) = '106231'
+      ```
+    - Si el número que da el usuario **sí trae guion** (ej: `106231-00`): es una referencia+versión puntual — match exacto:
+      ```sql
+      WHERE UPPER(TRIM("REFERENCIA")) = '106231-00'
+      ```
+    **Nunca** uses `WHERE "REFERENCIA" = '106231'` (sin `LEFT(...)`) para un número de 6 dígitos — no matchea nada, porque el dato real siempre tiene el sufijo `-VERSION`.
+
+    Esta regla es solo para filtros de UNA referencia puntual mencionada en la pregunta (`WHERE`). No aplica a agrupaciones/rankings de "la referencia más vendida" — esas siguen agrupando por `"REFERENCIA"` completa (base+versión) como hoy.
+
 ### Esquema de la tabla `ventas_2025` / `ventas_2026`
 
 | Columna | Tipo | Descripción corta |
@@ -403,7 +417,7 @@ Consulta explícita sobre dato crudo/original   → ventas_2025 o ventas_2026
 | `ZONA_EX` | TEXT | Zona Éxito |
 | `LLAVE_DEP2` | DOUBLE PRECISION | Llave bodega+ubicación |
 | `ESTADO_TIENDA` | TEXT | Estado de la tienda |
-| `REFERENCIA` | TEXT | Referencia interna de prenda |
+| `REFERENCIA` | TEXT | Referencia interna de prenda, formato `BASE-VERSION` (ej: `106231-00`) — ver regla 28 para filtros por referencia puntual |
 | `DESC_ITEM` | TEXT | Descripción micro de la prenda |
 | `COD_COLOR` | DOUBLE PRECISION | Código de color |
 | `COLOR` | TEXT | Color |
