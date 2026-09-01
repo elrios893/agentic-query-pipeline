@@ -37,6 +37,31 @@ except Exception:
     MODELO_ROUTER   = None
 
 # ---------------------------------------------------------------------------
+# Cliente de respaldo (DeepInfra) — el tier gratuito de Groq tiene un tope de
+# 1000 requests/día compartido a nivel de organización (no por API key: crear
+# más keys de Groq no suma cupo, y además su Acceptable Use Policy prohíbe
+# expresamente "registering multiple accounts... to circumvent rate limits",
+# así que NO se usan GROQ_API_KEY2/3 aquí). Ante cualquier fallo de Groq
+# (429 por cupo agotado, 5xx, timeout) se reintenta UNA vez con DeepInfra
+# antes de caer al fallback regex — mismo modelo nominal gpt-oss-20b, sin
+# tope diario. DeepInfra no es perfecto (~5/6 vs 6/6 de Groq en pruebas con
+# preguntas ambiguas), pero es preferible a NUEVA_CONSULTA por regex, que es
+# el resultado que más se quiere evitar (gasta muchos más tokens en el LLM
+# principal si la clasificación real era REFINAMIENTO o SOBRE_DATOS).
+# ---------------------------------------------------------------------------
+try:
+    from openai import OpenAI as _OpenAIClass
+    _deepinfra_key = os.getenv('DEEPINFRA_API_KEY')
+    _client_router_fallback = _OpenAIClass(
+        api_key=_deepinfra_key,
+        base_url='https://api.deepinfra.com/v1/openai/',
+    ) if _deepinfra_key else None
+    MODELO_ROUTER_FALLBACK = os.getenv('DEEPINFRA_MODEL_ROUTER', 'openai/gpt-oss-20b')
+except Exception:
+    _client_router_fallback = None
+    MODELO_ROUTER_FALLBACK = None
+
+# ---------------------------------------------------------------------------
 # Rutas posibles
 # ---------------------------------------------------------------------------
 RUTAS = ('NUEVA_CONSULTA', 'REFINAMIENTO', 'SOBRE_DATOS', 'CONVERSACIONAL')
@@ -411,38 +436,69 @@ def clasificar(
     json_schema = _construir_schema_con_plantillas(ids_candidatas) if ids_candidatas else _JSON_SCHEMA_ENRUTADOR
 
     try:
-        resp = _client_router.chat.completions.create(
-            model=MODELO_ROUTER,
-            messages=[
-                {'role': 'system', 'content': SYSTEM_ENRUTADOR},
-                {'role': 'user',   'content': prompt},
-            ],
-            temperature=0.0,
-            max_tokens=1200,
-            reasoning_effort='low',
-            response_format={
-                'type': 'json_schema',
-                'json_schema': json_schema,
-            },
+        resultado = _ejecutar_clasificacion(
+            _client_router, MODELO_ROUTER, prompt, json_schema, ids_candidatas,
         )
-        texto = resp.choices[0].message.content.strip()
-        resultado = _parsear_respuesta(texto, ids_candidatas)
-        print(f'  [enrutador] {resultado["ruta"]} (confianza: {resultado["confianza"]}) — {resultado["razon"]}')
-        if resultado['necesita_busqueda_web']:
-            print(f'  [enrutador] necesita_busqueda_web=True')
-        # Se imprime siempre que aplica (2+ sub_preguntas), incluyendo "ninguna"
-        # — trazabilidad de que la clasificación corrió, no solo cuando detecta
-        # algo (a diferencia de necesita_busqueda_web, que solo importa en True).
-        if resultado['sub_preguntas'] and len(resultado['sub_preguntas']) >= 2:
-            desc = f' — {resultado["relacion_descripcion"]}' if resultado['relacion_descripcion'] else ''
-            print(f'  [enrutador] relacion_tipo={resultado["relacion_tipo"]}{desc}')
-        if resultado['plantilla_sugerida']:
-            print(f'  [enrutador] plantilla_sugerida={resultado["plantilla_sugerida"]} (confianza: {resultado["plantilla_confianza"]})')
         return resultado
-
-    except Exception as e:
-        print(f'  [enrutador] Error LLM: {e} — usando regex fallback')
+    except Exception as e_groq:
+        print(f'  [enrutador] Error Groq: {e_groq}')
+        if _client_router_fallback is not None:
+            try:
+                resultado = _ejecutar_clasificacion(
+                    _client_router_fallback, MODELO_ROUTER_FALLBACK, prompt,
+                    json_schema, ids_candidatas, via='DeepInfra (fallback)',
+                )
+                return resultado
+            except Exception as e_deepinfra:
+                print(f'  [enrutador] Error DeepInfra fallback: {e_deepinfra} — usando regex fallback')
+                return _clasificar_regex(pregunta, contexto_sesion)
+        print('  [enrutador] Sin fallback DeepInfra configurado — usando regex fallback')
         return _clasificar_regex(pregunta, contexto_sesion)
+
+
+def _ejecutar_clasificacion(
+    cliente, modelo: str, prompt: str, json_schema: dict,
+    ids_candidatas: list[str], via: str | None = None,
+) -> dict:
+    """Ejecuta una llamada de clasificación contra `cliente`/`modelo` y parsea
+    la respuesta. Lanza la excepción tal cual si la llamada falla — quien
+    invoca decide si reintenta con otro cliente o cae a regex."""
+    resp = cliente.chat.completions.create(
+        model=modelo,
+        messages=[
+            {'role': 'system', 'content': SYSTEM_ENRUTADOR},
+            {'role': 'user',   'content': prompt},
+        ],
+        temperature=0.0,
+        # 1200 se quedaba corto en preguntas de doble respuesta ("la peor
+        # Y la mejor"): el modelo agota el presupuesto razonando y nunca
+        # llega a emitir el JSON final -> falla el parseo -> cae a
+        # NUEVA_CONSULTA por el fallback conservador. Confirmado en Groq
+        # (400 json_validate_failed) y en DeepInfra (completion truncado
+        # exactamente en el limite). Con mas margen el razonamiento
+        # alcanza a terminar antes del limite.
+        max_tokens=3000,
+        reasoning_effort='low',
+        response_format={
+            'type': 'json_schema',
+            'json_schema': json_schema,
+        },
+    )
+    texto = resp.choices[0].message.content.strip()
+    resultado = _parsear_respuesta(texto, ids_candidatas)
+    prefijo = f'  [enrutador]{f" ({via})" if via else ""}'
+    print(f'{prefijo} {resultado["ruta"]} (confianza: {resultado["confianza"]}) — {resultado["razon"]}')
+    if resultado['necesita_busqueda_web']:
+        print(f'{prefijo} necesita_busqueda_web=True')
+    # Se imprime siempre que aplica (2+ sub_preguntas), incluyendo "ninguna"
+    # — trazabilidad de que la clasificación corrió, no solo cuando detecta
+    # algo (a diferencia de necesita_busqueda_web, que solo importa en True).
+    if resultado['sub_preguntas'] and len(resultado['sub_preguntas']) >= 2:
+        desc = f' — {resultado["relacion_descripcion"]}' if resultado['relacion_descripcion'] else ''
+        print(f'{prefijo} relacion_tipo={resultado["relacion_tipo"]}{desc}')
+    if resultado['plantilla_sugerida']:
+        print(f'{prefijo} plantilla_sugerida={resultado["plantilla_sugerida"]} (confianza: {resultado["plantilla_confianza"]})')
+    return resultado
 
 
 # ---------------------------------------------------------------------------
